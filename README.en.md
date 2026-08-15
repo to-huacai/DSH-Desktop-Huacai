@@ -1,101 +1,111 @@
 # DSH-Desktop-Huacai (DeepSeek Harness Desktop)
 
-DeepSeek Harness desktop application, providing local development environment and plugin management features.
+A self-contained desktop client for DeepSeek Harness — a single-file launcher that bundles the Node.js runtime and the dsh app. **Double-click to run; no dependencies to install on the target machine.**
 
 ## Project Introduction
 
-DSH-Desktop-Huacai is a desktop client application based on DeepSeek Harness, built using C# and Node.js technology stacks, providing users with a visual interface to manage and use DeepSeek services.
+DSH-Desktop-Huacai is a self-contained desktop client built on DeepSeek Harness. The launcher (C# / Windows Forms) packages a portable Node.js runtime, the dsh application, and plugins into a single exe. On launch it automatically extracts the runtime, bootstraps the profile, installs plugins, starts the dsh web service, and opens the interface in a browser.
 
 ## Main Features
 
-- **Launcher Management**: Automatically detect and start DeepSeek backend service
-- **Plugin System**: Supports editor plugin (dsh-editor) and update check plugin (dsh-updater)
-- **Local Update**: Automatically check and download latest version updates
-- **Window Management**: Supports multiple window modes, including splash screen and system tray
-- **Browser Integration**: Automatically open default browser or specified browser to access application interface
-- **Configuration Management**: Supports customizing parameters such as port, browser settings, exit time, etc.
+- **Self-contained, no install**: bundles a portable Node.js runtime and the full dsh app; fully usable offline
+- **One-click start**: double-click the exe → extract the embedded runtime (first run only) → bootstrap profile → install plugins → start dsh web → open the UI
+- **Launcher management**: automatically detects and starts the DeepSeek service; extraction progress bar + loading overlay, no blank waiting
+- **Plugin system**: built-in editor plugin (dsh-editor), update-check plugin (dsh-updater), plus skin/archive plugins
+- **In-app updates**: one-click check and update of the dsh core from Settings → General (npm official registry, auto-switches mirror on failure), with automatic rollback
+- **System tray**: closing the window minimizes to tray and the service keeps running; right-click the tray icon to "Open UI" or "Stop & Exit"
+- **Browser integration**: supports an application-style window mode (no address bar) or the system default browser
 
 ## Technical Architecture
 
-- **Frontend Framework**: Windows Forms (C#) desktop interface
-- **Backend Service**: Node.js runtime
-- **Plugin System**: Local plugin architecture based on @local namespace
-- **Build Tool**: PowerShell script (build.ps1)
+- **Launcher**: C# / Windows Forms (.NET Framework 4.x, compiled with the built-in csc)
+- **Runtime**: embedded portable Node.js (with npm)
+- **App core**: DeepSeek Harness (dsh) web application
+- **Plugins**: local plugin architecture based on the `@local` namespace
+- **Build tooling**: PowerShell scripts (build.ps1) + a self-bootstrapping packaging flow
 
 ## Directory Structure
 
 ```
 ├── src/
-│   └── Launcher.cs           # Application entry, launcher core logic
+│   └── Launcher.cs              # Launcher core logic (C#)
 ├── tools/
-│   ├── icon-gen.cs          # Icon generation tool
-│   ├── zipdir.cs            # ZIP packaging tool
-│   ├── test-mask-ui.cs      # UI test tool
-│   └── test-editor-*.mjs    # Editor-related test scripts
+│   ├── icon-gen.cs              # Icon generation tool
+│   ├── zipdir.cs                # ZIP packaging tool
+│   ├── pack-exe.mjs             # exe assembly script
+│   ├── parse-payload.mjs        # Embedded payload parse/verify
+│   └── test-*.{cs,mjs}          # Test tools
 ├── dsh-bundle/
-│   ├── apply-update.mjs     # Update apply script
+│   ├── apply-update.mjs         # Update apply script
 │   ├── install-skin-plugin.mjs  # Skin installation script
-│   └── plugin/
-│       └── @local/
-│           ├── dsh-editor/  # Editor plugin
-│           └── dsh-updater/ # Update check plugin
-├── build.ps1                # Build script
-└── run-test.ps1            # Test script
+│   └── plugin/@local/
+│       ├── dsh-editor/          # Editor plugin
+│       └── dsh-updater/         # Update-check plugin
+├── build.ps1                    # Build script (produces the exe)
+├── run-test.ps1                 # Test script
+├── merge-exe-parts.bat          # Recombine split parts back into the release exe
+├── DSH-Desktop-Huacai-1.11.exe.part1/.part2  # Release exe split parts (each <100MB)
+├── 使用说明.md / 更新文档.md / 新增功能说明.md  # Chinese docs (usage / updates / new features)
+└── LICENSE
 ```
 
-## Build Requirements
+## Getting the Release Build
 
-- .NET Framework / .NET SDK
-- Node.js Runtime
-- Windows Operating System
-- PowerShell 5.0+
+Gitee free repositories cap single files at 100MB, so the ~123MB release exe is committed as two split parts:
 
-## Quick Start
-
-1. Clone repository:
-```bash
+```powershell
 git clone https://gitee.com/huacaicaicai/dsh-desktop-huacai.git
+cd dsh-desktop-huacai
+# Recombine the parts (or simply double-click merge-exe-parts.bat):
+copy /b "DSH-Desktop-Huacai-1.11.exe.part1" + "DSH-Desktop-Huacai-1.11.exe.part2" "DSH-Desktop-Huacai-1.11.exe"
 ```
 
-2. Execute build script:
+Then double-click `DSH-Desktop-Huacai-1.11.exe` to run (Windows 10/11, nothing to install).
+> Make sure the exe is not running before recombining; the parts have been verified (combined hash matches the original file).
+
+## Building from Source
+
+Build machine requirements: Windows, .NET Framework 4.x (with the built-in csc), Node.js.
+
 ```powershell
-.\build.ps1
+powershell -ExecutionPolicy Bypass -File build.ps1 -OutExe DSH-Desktop-Huacai-1.11.exe
 ```
 
-3. Run application:
-```powershell
-dotnet run --project src
-```
+The script extracts the embedded plugins from the previous exe (self-bootstrapping build) → overlays `dsh-bundle\` → packages the embedded Node runtime → copies the latest dsh from the npx cache (or `-FreshApp` to install from npm) → compiles the launcher → assembles the new exe.
+> Whenever the embedded payload layout or version changes, bump `EMBEDDED_VERSION` in `src\Launcher.cs` accordingly.
 
-## Configuration Instructions
+## Configuration (launcher.json)
 
-The following parameters can be configured through the `Config` class:
+Place a `launcher.json` next to the exe to override defaults (optional):
 
-| Parameter | Description | Default Value |
-|------|------|--------|
-| Port | Service Port | 8080 |
-| OpenBrowser | Whether to automatically open browser | true |
-| AppMode | Run in Application Mode | false |
-| BrowserExe | Specify browser path | - |
-| DshHome | DeepSeek Home Directory | - |
-| ExitAfterMs | Exit delay time (milliseconds) | - |
+| Field | Description | Default |
+|-------|-------------|---------|
+| port | dsh web port | 3080 |
+| openBrowser | Auto-open the UI when ready | true |
+| appMode | Application window mode (no address bar) | true |
+| browserExe | Full path to a browser exe (auto-detect if empty) | null |
+| dshHome | DSH_HOME directory (default ~/.dsh) | null |
 
 ## Plugin Development
 
 ### dsh-editor Plugin
-
-Provides online editor functionality, supporting code editing, file browsing, etc.
+Provides an online editor with code editing, file browsing, etc.
 
 ### dsh-updater Plugin
+Checks and downloads dsh core updates so users always run the latest version.
 
-Responsible for checking and downloading application updates, ensuring users always run the latest version.
+## Documentation
+
+- Usage guide (Chinese): `使用说明.md`
+- Update mechanism, rebuild steps and FAQ (Chinese): `更新文档.md`
+- New features of this release (Chinese): `新增功能说明.md`
 
 ## Open Source License
 
-This project follows an open source license, for specific information please refer to the LICENSE file in the repository.
+This project follows an open source license; see the LICENSE file in the repository for details.
 
 ## Related Links
 
-- Project Address: https://gitee.com/huacaicaicai/dsh-desktop-huacai
+- Project: https://gitee.com/huacaicaicai/dsh-desktop-huacai
 - DeepSeek Official Website: https://deepseek.com
 - Issue Feedback: https://gitee.com/huacaicaicai/dsh-desktop-huacai/issues
