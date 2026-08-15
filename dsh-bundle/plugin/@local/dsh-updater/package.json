@@ -1,0 +1,22 @@
+{
+  "name": "@local/dsh-updater",
+  "version": "2.0.0",
+  "description": "dsh web 通用设置中的更新检查：对比内嵌版本与 npm 官方最新版本，支持一键在线更新（写入 update-request.json，由 DSH-Desktop-Huacai 启动器接棒完成 npm 安装并自动重启）。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime"
+      ],
+      "immediately": false
+    }
+  },
+  "license": "MIT"
+}

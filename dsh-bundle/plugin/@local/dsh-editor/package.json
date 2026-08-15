@@ -1,0 +1,22 @@
+{
+  "name": "@local/dsh-editor",
+  "version": "1.2.0",
+  "description": "dsh web 编辑器模式:左侧文件树、中间可编辑文件、右侧对话带下拉会话切换,可与默认对话模式互相切换。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime"
+      ],
+      "immediately": false
+    }
+  },
+  "license": "MIT"
+}
