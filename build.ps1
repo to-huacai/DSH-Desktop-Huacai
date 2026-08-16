@@ -9,13 +9,13 @@
 #
 # Usage:
 #   powershell -ExecutionPolicy Bypass -File build.ps1
-#   powershell -ExecutionPolicy Bypass -File build.ps1 -OutExe 'DSH-Desktop-Huacai-1.11.exe'
+#   powershell -ExecutionPolicy Bypass -File build.ps1 -OutExe 'DSH-Desktop-Huacai-1.14.exe'
 #
 # Options:
 #   -SourceExe   previous release exe whose embedded plugin/script payload is
-#                reused as the build baseline (default DSH-Desktop-Huacai-1.11.exe;
+#                reused as the build baseline (default DSH-Desktop-Huacai-1.14.exe;
 #                dsh-bundle\ is overlaid on top, app.zip/runtime.zip are rebuilt)
-#   -OutExe      output file name (default DSH-Desktop-Huacai-1.12.exe)
+#   -OutExe      output file name (default DSH-Desktop-Huacai-1.14.exe)
 #   -NodeVersion embedded Node.js version (default v24.14.1; a local node of
 #                this version is reused when present, otherwise mirrors are tried)
 #   -FreshApp    reinstall dsh from npm instead of copying the local npx cache
@@ -30,8 +30,8 @@
 # $LASTEXITCODE instead.
 
 param(
-    [string]$SourceExe = 'DSH-Desktop-Huacai-1.11.exe',
-    [string]$OutExe = 'DSH-Desktop-Huacai-1.12.exe',
+    [string]$SourceExe = 'DSH-Desktop-Huacai-1.14.exe',
+    [string]$OutExe = 'DSH-Desktop-Huacai-1.14.exe',
     [string]$NodeVersion = 'v24.14.1',
     [switch]$FreshApp
 )
@@ -69,9 +69,13 @@ Write-Host ''
 Write-Host '===== DSH-Desktop-Huacai self-contained exe build =====' -ForegroundColor Cyan
 
 # ---- 0. locate a real node (skip the C:\Windows\System32 store stub) ----
+# Prefer the system Node.js install; the embedded desktop runtime is the
+# fallback when no system Node exists (both carry npm for the launcher build).
 $nodeExe = $null
-foreach ($c in @('E:\devleop\nodejs\node.exe', "$env:ProgramFiles\nodejs\node.exe",
-                 "$env:LOCALAPPDATA\Programs\nodejs\node.exe")) {
+foreach ($c in @('D:\code\node\node.exe', 'E:\devleop\nodejs\node.exe',
+                 "$env:ProgramFiles\nodejs\node.exe",
+                 "$env:LOCALAPPDATA\Programs\nodejs\node.exe",
+                 "$env:LOCALAPPDATA\DSH-Desktop-Huacai\runtime\node.exe")) {
     if (Test-Path $c) { $nodeExe = $c; break }
 }
 if (-not $nodeExe) {
@@ -134,8 +138,9 @@ $nodeZip = Join-Path $cache "node-$NodeVersion-win-x64.zip"
 $nodeDir = Join-Path $cache "node-$NodeVersion-win-x64"
 if (-not (Test-Path (Join-Path $nodeDir 'node.exe'))) {
     $localNode = $null
-    foreach ($c in @('E:\devleop\nodejs\node.exe', "$env:ProgramFiles\nodejs\node.exe",
-                     "$env:LOCALAPPDATA\Programs\nodejs\node.exe")) {
+    foreach ($c in @('D:\code\node\node.exe', 'E:\devleop\nodejs\node.exe', "$env:ProgramFiles\nodejs\node.exe",
+                     "$env:LOCALAPPDATA\Programs\nodejs\node.exe",
+                     "$env:LOCALAPPDATA\DSH-Desktop-Huacai\runtime\node.exe")) {
         if (Test-Path $c) {
             $v = (& $c --version 2>$null | Select-Object -Last 1)
             if ($v -eq $NodeVersion) { $localNode = $c; break }
@@ -254,8 +259,9 @@ Copy-Item (Join-Path $nodeDir 'LICENSE') $staging -Force
 $npmSrc = Join-Path $nodeDir 'node_modules\npm'
 $npmCmd = Join-Path $nodeDir 'npm.cmd'
 if (-not (Test-Path (Join-Path $npmSrc 'bin\npm-cli.js'))) {
-    foreach ($c in @('E:\devleop\nodejs\node.exe', "$env:ProgramFiles\nodejs\node.exe",
-                     "$env:LOCALAPPDATA\Programs\nodejs\node.exe")) {
+    foreach ($c in @('D:\code\node\node.exe', 'E:\devleop\nodejs\node.exe', "$env:ProgramFiles\nodejs\node.exe",
+                     "$env:LOCALAPPDATA\Programs\nodejs\node.exe",
+                     "$env:LOCALAPPDATA\DSH-Desktop-Huacai\runtime\node.exe")) {
         if (-not (Test-Path $c)) { continue }
         $dir = Split-Path -Parent $c
         if (Test-Path (Join-Path $dir 'node_modules\npm\bin\npm-cli.js')) {

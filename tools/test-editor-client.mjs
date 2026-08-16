@@ -5,8 +5,12 @@
 // ctx to verify registration + init paths don't throw.
 import { createRequire } from 'node:module'
 import { readFileSync } from 'node:fs'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const require = createRequire('C:/Users/花菜菜/AppData/Local/DSH-Desktop-Huacai/app/node_modules/@deepseek-ai/dsh/package.json')
+const here = dirname(fileURLToPath(import.meta.url))
+const appModules = join(process.env.LOCALAPPDATA || '', 'DSH-Desktop-Huacai', 'app', 'node_modules')
+const require = createRequire(join(appModules, '@deepseek-ai', 'dsh', 'package.json'))
 const React = require('react')
 
 let captured = null
@@ -32,7 +36,7 @@ globalThis.location = { href: 'http://127.0.0.1:3080/' }
 globalThis.requestAnimationFrame = (fn) => { try { fn() } catch (e) {} }
 
 // ── load the client through the module loader ──
-const code = readFileSync('C:/Users/花菜菜/Desktop/to-deepseek/dsh-bundle/plugin/@local/dsh-editor/lib/client.js', 'utf8')
+const code = readFileSync(join(here, '..', 'dsh-bundle', 'plugin', '@local', 'dsh-editor', 'lib', 'client.js'), 'utf8')
 const fakeWindow = {
   __ModuleLoader__: {
     load(entry) { captured = entry },
@@ -106,7 +110,12 @@ if (!cssSeen.value.includes('body.dsh-editor-mode')) throw new Error('editor-mod
 if (!cssSeen.value.includes('data-shell-overlay')) throw new Error('frame selector CSS missing')
 if (!cssSeen.value.includes('.dsh-editor-toast')) throw new Error('toast CSS missing')
 if (!cssSeen.value.includes('.dsh-editor-term-panel')) throw new Error('terminal panel CSS missing')
-console.log('✓ editor-mode CSS present (' + cssSeen.value.length + ' chars)')
+// 1.14: line-number gutter + image preview CSS present
+if (!cssSeen.value.includes('.dsh-editor-gutter')) throw new Error('line-number gutter CSS missing')
+if (!cssSeen.value.includes('--dsh-editor-gutter-w')) throw new Error('gutter width var CSS missing')
+if (!cssSeen.value.includes('.dsh-editor-image-view')) throw new Error('image preview CSS missing')
+if (!cssSeen.value.includes('calc(100% - var(--dsh-editor-gutter-w')) throw new Error('textarea gutter offset CSS missing')
+console.log('✓ editor-mode CSS present incl. 1.14 gutter + image (' + cssSeen.value.length + ' chars)')
 
 // ── embedded-terminal emulator (parser/grid, no DOM) ──
 const term = exports._termNew(20, 5)
@@ -126,12 +135,56 @@ text = exports._termText(term)
 if (!text.startsWith('reset')) throw new Error('clear/home broken: ' + JSON.stringify(text))
 console.log('✓ emulator clear/home')
 
+// 1.13 regression: CSI K / CSI J with NO parameter must mean mode 0
+// (erase to end-of-line / below cursor) — previously the default `1` wiped
+// the whole line, making PowerShell/PSReadLine prompt text vanish.
+const termK = exports._termNew(20, 5)
+exports._termFeed(termK, 'prompt>')
+exports._termFeed(termK, '\x1b[Ktail') // erase to EOL must keep 'prompt>'
+text = exports._termText(termK)
+if (!text.includes('prompt>') || !text.includes('tail')) throw new Error('CSI K erase-to-EOL broken: ' + JSON.stringify(text))
+console.log('✓ emulator CSI K erase-to-EOL (prompt survives)')
+const termJ = exports._termNew(20, 5)
+exports._termFeed(termJ, 'top\r\n\x1b[J') // erase below: 'top' must survive
+text = exports._termText(termJ)
+if (!text.includes('top')) throw new Error('CSI J erase-below broken: ' + JSON.stringify(text))
+console.log('✓ emulator CSI J erase-below')
+
 // scrollback: fill 20 lines into a 5-row terminal → history capped at 50
 const term2 = exports._termNew(10, 5)
 for (let i = 0; i < 20; i++) exports._termFeed(term2, 'line' + i + '\r\n')
 text = exports._termText(term2)
 if (!text.includes('line19')) throw new Error('scroll lost latest: ' + JSON.stringify(text))
 console.log('✓ emulator scrollback')
+
+// ── 1.13 terminal project-following: termRootFor resolves the session cwd ──
+// session summaries expose cwd (NOT workspaceId) — the terminal root must
+// follow the current session's directory per mode.
+exports._testTreeRoot(null)
+exports._testSetRoots([
+  { id: 'wa', title: 'WS A', path: 'C:\\proj\\a' },
+  { id: 'wb', title: 'WS B', path: 'C:\\proj\\b' },
+])
+const rootConv = exports._termRootFor('C:\\proj\\b') // conversation mode, session in WS B
+if (rootConv.root !== 'wb' || rootConv.cwd !== 'C:\\proj\\b') {
+  throw new Error('conversation-mode root bad: ' + JSON.stringify(rootConv))
+}
+console.log('✓ 1.13 conversation mode follows the session cwd → ' + JSON.stringify(rootConv))
+exports._testTreeRoot('wa') // editor mode selects WS A in the tree
+exports._testMode(true)
+const rootEdit = exports._termRootFor('C:\\proj\\b') // session still in B, but editor tree wins
+if (rootEdit.root !== 'wa' || rootEdit.cwd !== 'C:\\proj\\a') {
+  throw new Error('editor-mode root bad: ' + JSON.stringify(rootEdit))
+}
+console.log('✓ 1.13 editor mode follows the tree project → ' + JSON.stringify(rootEdit))
+exports._testMode(false)
+exports._testTreeRoot(null)
+const rootNone = exports._termRootFor('')
+if (rootNone.root !== '' || rootNone.cwd !== '') {
+  throw new Error('fallback root bad: ' + JSON.stringify(rootNone))
+}
+console.log('✓ 1.13 fallback root (no session) → ' + JSON.stringify(rootNone))
+exports._testSetRoots([])
 
 // ── React render regression: hooks must stay consistent across modes ──
 // The terminal button/panel call useSessions — rendering them twice with a

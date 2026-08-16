@@ -47,7 +47,7 @@ DSH-Desktop-Huacai is a self-contained desktop client built on DeepSeek Harness.
 ├── build.ps1                    # Build script (produces the exe)
 ├── run-test.ps1                 # Test script
 ├── merge-exe-parts.bat          # Recombine split parts back into the release exe
-├── DSH-Desktop-Huacai-1.12.exe.part1/.part2  # Release exe split parts (each <100MB)
+├── DSH-Desktop-Huacai-1.13.exe.part1/.part2  # Release exe split parts (each <100MB)
 ├── 使用说明.md / 更新文档.md / 新增功能说明.md  # Chinese docs (usage / updates / new features)
 └── LICENSE
 ```
@@ -62,10 +62,10 @@ Gitee free repositories cap single files at 100MB, so the ~123MB release exe is 
 git clone https://gitee.com/huacaicaicai/dsh-desktop-huacai.git
 cd dsh-desktop-huacai
 # Recombine the parts (or simply double-click merge-exe-parts.bat):
-copy /b "DSH-Desktop-Huacai-1.12.exe.part1" + "DSH-Desktop-Huacai-1.12.exe.part2" "DSH-Desktop-Huacai-1.12.exe"
+copy /b "DSH-Desktop-Huacai-1.13.exe.part1" + "DSH-Desktop-Huacai-1.13.exe.part2" "DSH-Desktop-Huacai-1.13.exe"
 ```
 
-Then double-click `DSH-Desktop-Huacai-1.12.exe` to run (Windows 10/11, nothing to install).
+Then double-click `DSH-Desktop-Huacai-1.13.exe` to run (Windows 10/11, nothing to install).
 > Make sure the exe is not running before recombining; the parts have been verified (combined hash matches the original file).
 
 ## Building from Source
@@ -73,7 +73,7 @@ Then double-click `DSH-Desktop-Huacai-1.12.exe` to run (Windows 10/11, nothing t
 Build machine requirements: Windows, .NET Framework 4.x (with the built-in csc), Node.js.
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File build.ps1 -OutExe DSH-Desktop-Huacai-1.12.exe
+powershell -ExecutionPolicy Bypass -File build.ps1 -OutExe DSH-Desktop-Huacai-1.13.exe
 ```
 
 The script extracts the embedded plugins from the previous exe (self-bootstrapping build) → overlays `dsh-bundle\` → packages the embedded Node runtime → copies the latest dsh from the npx cache (or `-FreshApp` to install from npm) → compiles the launcher → assembles the new exe.
@@ -120,13 +120,15 @@ The five built-in features (skin, archive, update, editor mode, terminal) are al
 - Syntax highlighting for 30+ languages (JS/TS/Python/Rust/Go/Java/C/C++/C#/SQL/HTML/CSS/Shell/YAML, etc.); auto-disabled for very large files to keep input smooth
 - Reads/writes files only inside the current workspace directory, with path traversal protection
 
-### 🖥️ Terminal (new in 1.12)
+### 🖥️ Terminal (new in 1.12; terminal list in 1.13)
 
 **Entry: the "Terminal" button at the bottom of the sidebar** — visible in both conversation mode and editor mode
 
 - One click opens an **embedded Qoder-style terminal panel** (fixed bottom bar): switch PowerShell/CMD from the header, colored output, wide CJK characters, wheel-scroll history; the shell session survives closing the panel
+- **Terminal list (1.13, VS Code style)**: a tab bar on top of the panel — one independent session per tab; "+" creates a new terminal, click a tab to switch, "×" on a tab closes/kills it; closing the panel keeps every session running and the tabs/output are restored when reopening
 - The panel header also offers "external terminal" to open the current workspace in a system terminal window (Windows Terminal, or cmd)
-- Editor mode: opens at the file-tree project root; conversation mode: at the current session's workspace (falls back to the DSH home / user home)
+- **The starting directory follows the currently selected project (1.13)**: editor mode opens at the file-tree project root; conversation mode at the **current session's workspace** (new terminals opened after switching session/project follow the new project; falls back to the DSH home / user home)
+- 1.13 fixes the prompt/cursor spacing: the PowerShell prompt shows `PS <dir-name>`, cmd shows `C>`, and the cursor hugs the prompt text (no more blank gap)
 - Driven by ConPTY (node-pty) + WebSocket — zero new dependencies; the working directory comes from the workspace registry, never from a client-supplied path
 
 ### 🔄 In-App Update (dsh-updater)

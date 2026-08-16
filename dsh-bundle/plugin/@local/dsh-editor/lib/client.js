@@ -125,6 +125,7 @@ window.__ModuleLoader__.load({
       selectedPath: null,
       content: '',
       highlightHtml: '',
+      isImage: false, // selected file is an image → read-only preview (1.14)
       dirty: false,
       saving: false,
       loadingFile: false,
@@ -142,9 +143,11 @@ window.__ModuleLoader__.load({
       terminalBusy: false, // native terminal button in-flight (1.12)
       terminalOpen: false, // embedded terminal panel visible (1.12)
       termShell: '', // embedded shell preference: '' | 'cmd' | 'powershell' (1.12)
-      termStatus: 'closed', // embedded terminal status: closed|connecting|open|exited|error (1.12)
-      termMeta: null, // { cwd, shell, pid } from the server (1.12)
+      termStatus: 'closed', // active-session status: closed|connecting|open|exited|error (1.12)
+      termMeta: null, // { cwd, shell, pid } of the ACTIVE session (1.12)
       termError: '', // last embedded-terminal error message (1.12)
+      termTabs: [], // [{ sid, title, cwd, shell, exited }] — terminal list (1.13)
+      termActiveSid: null, // active terminal tab sid (1.13)
     }
 
       /** Runtime session opener, wired in apply() once the sessions service is available. */
@@ -227,9 +230,26 @@ window.__ModuleLoader__.load({
       // editor body: highlighted <pre> behind a transparent-text <textarea>
       '.dsh-editor-editor{position:relative;flex:1;min-height:0;background:var(--dsw-alias-bg-layer-1,#f6f8fa);display:flex;flex-direction:row;}',
       '.dsh-editor-edit-col{position:relative;flex:1;min-width:0;}',
-      '.dsh-editor-pre{position:absolute;inset:0;margin:0;overflow:hidden;pointer-events:none;padding:12px 14px;box-sizing:border-box;',
+      // 1.14: line-number gutter pinned to the left of the edit column; the
+      // highlight <pre> and the <textarea> shift right by the gutter width
+      // (a CSS var on the column so wide files get a wider gutter)
+      '.dsh-editor-gutter{position:absolute;left:0;top:0;bottom:0;width:var(--dsh-editor-gutter-w,44px);margin:0;overflow:hidden;box-sizing:border-box;',
+      'padding:12px 8px 12px 0;text-align:right;user-select:none;pointer-events:none;',
+      'font-family:var(--ds-font-mono,ui-monospace,"Cascadia Code",Consolas,monospace);font-size:13px;line-height:1.6;tab-size:2;',
+      'white-space:pre;color:var(--dsw-alias-label-tertiary,#8b949e);',
+      'background:var(--dsw-alias-bg-layer-1,#f6f8fa);border-right:1px solid var(--dsw-alias-border-l1,rgba(0,0,0,.08));}',
+      '.dsh-editor-pre{position:absolute;top:0;right:0;bottom:0;left:var(--dsh-editor-gutter-w,44px);margin:0;overflow:hidden;pointer-events:none;padding:12px 14px;box-sizing:border-box;',
       'font-family:var(--ds-font-mono,ui-monospace,"Cascadia Code",Consolas,monospace);font-size:13px;line-height:1.6;tab-size:2;',
       'white-space:pre;color:var(--dsw-alias-label-primary,#1f2328);}',
+      // 1.14: read-only image preview (selected file is an image)
+      '.dsh-editor-image-view{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;',
+      'padding:24px;box-sizing:border-box;background:var(--dsw-alias-bg-layer-1,#f6f8fa);}',
+      '.dsh-editor-image-view img{max-width:100%;max-height:calc(100% - 34px);object-fit:contain;border-radius:6px;',
+      'box-shadow:0 2px 14px rgba(0,0,0,.14);background:',
+      // checkerboard so transparent pixels stay visible (tiny inline svg)
+      "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16'%3E%3Crect width='16' height='16' fill='%23ffffff'/%3E%3Crect width='8' height='8' fill='%23e3e6ea'/%3E%3Crect x='8' y='8' width='8' height='8' fill='%23e3e6ea'/%3E%3C/svg%3E\");}",
+      '.dsh-editor-image-name{font-size:12px;color:var(--dsw-alias-label-tertiary,#8b949e);max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;',
+      'font-family:var(--ds-font-mono,ui-monospace,Consolas,monospace);}',
       '.dsh-editor-preview-col{flex:1;min-width:0;overflow:auto;box-sizing:border-box;padding:14px 20px 40px;',
       'border-left:1px solid var(--dsw-alias-border-l1,rgba(0,0,0,.08));background:var(--dsw-alias-bg-base,#ffffff);}',
       '.dsh-editor-preview-col .markdown{max-width:760px;margin:0 auto;font-size:14px;line-height:1.7;}',
@@ -276,7 +296,10 @@ window.__ModuleLoader__.load({
       '[data-slot="conversation"][data-dsh-editor-droptarget]::before{content:"松开以添加文件引用";position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:90;',
       'padding:7px 16px;border-radius:999px;background:var(--dsw-alias-state-business-primary,#4176e6);color:#fff;font-size:12px;',
       'box-shadow:0 4px 18px rgba(0,0,0,.25);pointer-events:none;white-space:nowrap;}',
-      '.dsh-editor-textarea{position:absolute;inset:0;width:100%;height:100%;border:none;outline:none;resize:none;padding:12px 14px;box-sizing:border-box;',
+      // textarea sits beside the 1.14 gutter: left offset + calc() width (a
+      // textarea is a replaced element, so left+right alone would NOT stretch)
+      '.dsh-editor-textarea{position:absolute;top:0;bottom:0;left:var(--dsh-editor-gutter-w,44px);width:calc(100% - var(--dsh-editor-gutter-w,44px));height:100%;',
+      'border:none;outline:none;resize:none;padding:12px 14px;box-sizing:border-box;',
       'background:transparent;color:transparent;caret-color:var(--dsw-alias-label-primary,#1f2328);overflow:auto;',
       'font-family:var(--ds-font-mono,ui-monospace,"Cascadia Code",Consolas,monospace);font-size:13px;line-height:1.6;tab-size:2;',
       'white-space:pre;word-wrap:normal;}',
@@ -384,10 +407,25 @@ window.__ModuleLoader__.load({
       // embedded terminal panel (1.12) — fixed bottom bar, Qoder-style.
       // `left` tracks the sidebar/file-tree column (measured live) so the
       // sidebar footer actions stay visible while the panel is open.
-      '.dsh-editor-term-panel{position:fixed;left:var(--dsh-term-left,0px);right:0;bottom:0;height:240px;z-index:15;display:flex;flex-direction:column;',
+      // 1.13 adds a VS Code style tab bar (one tab per terminal session).
+      '.dsh-editor-term-panel{position:fixed;left:var(--dsh-term-left,0px);right:0;bottom:0;height:280px;z-index:15;display:flex;flex-direction:column;',
       'pointer-events:auto;background:#0d1117;color:#e6edf3;border-top:1px solid rgba(255,255,255,.14);',
       'font-family:var(--ds-font-mono,ui-monospace,"Cascadia Code",Consolas,monospace);box-shadow:0 -6px 24px rgba(0,0,0,.22);}',
-      '.dsh-editor-term-head{display:flex;align-items:center;gap:8px;height:34px;flex:none;padding:0 10px;box-sizing:border-box;',
+      // tab bar (1.13) — VS Code style terminal list
+      '.dsh-editor-term-tabs{display:flex;align-items:center;gap:2px;height:30px;flex:none;padding:0 6px;overflow-x:auto;overflow-y:hidden;',
+      'background:#0d1117;border-bottom:1px solid rgba(255,255,255,.08);scrollbar-width:thin;}',
+      '.dsh-editor-term-tab{display:inline-flex;align-items:center;gap:6px;height:22px;flex:none;max-width:220px;padding:0 6px 0 10px;',
+      'border-radius:6px;font-size:11.5px;color:#8b949e;cursor:pointer;user-select:none;white-space:nowrap;font-family:inherit;}',
+      '.dsh-editor-term-tab:hover{background:rgba(255,255,255,.06);}',
+      '.dsh-editor-term-tab.active{background:rgba(255,255,255,.12);color:#e6edf3;}',
+      '.dsh-editor-term-tab-label{overflow:hidden;text-overflow:ellipsis;min-width:0;}',
+      '.dsh-editor-term-tab-close{flex:none;display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;',
+      'border:none;border-radius:4px;background:transparent;color:#8b949e;font-size:12px;line-height:1;cursor:pointer;padding:0;font-family:inherit;opacity:.6;}',
+      '.dsh-editor-term-tab-close:hover{background:rgba(255,255,255,.14);color:#f85149;opacity:1;}',
+      '.dsh-editor-term-tab-add{flex:none;display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;margin-left:2px;',
+      'border:none;border-radius:6px;background:transparent;color:#8b949e;font-size:15px;line-height:1;cursor:pointer;padding:0;font-family:inherit;}',
+      '.dsh-editor-term-tab-add:hover{background:rgba(255,255,255,.1);color:#e6edf3;}',
+      '.dsh-editor-term-head{display:flex;align-items:center;gap:8px;height:32px;flex:none;padding:0 10px;box-sizing:border-box;',
       'background:#161b22;border-bottom:1px solid rgba(255,255,255,.08);font-size:12px;color:#8b949e;font-family:inherit;}',
       '.dsh-editor-term-head-title{flex:none;display:inline-flex;align-items:center;gap:6px;font-weight:600;color:#e6edf3;}',
       '.dsh-editor-term-head-title svg{color:#8b949e;}',
@@ -409,8 +447,8 @@ window.__ModuleLoader__.load({
       '@keyframes dsh-term-blink{0%,55%{opacity:1}56%,100%{opacity:0}}',
       '.dsh-editor-term-hidden-ta{position:absolute;opacity:0;width:2px;height:2px;left:0;top:0;border:none;padding:0;resize:none;overflow:hidden;}',
       // keep content clear of the panel while it is open
-      'body.dsh-editor-terminal-open [data-slot="conversation"]>div{padding-bottom:248px;box-sizing:border-box;}',
-      'body.dsh-editor-terminal-open .dsh-editor-panel{bottom:248px;}',
+      'body.dsh-editor-terminal-open [data-slot="conversation"]>div{padding-bottom:288px;box-sizing:border-box;}',
+      'body.dsh-editor-terminal-open .dsh-editor-panel{bottom:288px;}',
       '.dsh-editor-term-banner{position:absolute;left:0;right:0;top:0;bottom:0;display:flex;align-items:center;justify-content:center;',
       'background:#0d1117;color:#f85149;font-size:13px;font-family:inherit;z-index:2;padding:12px;text-align:center;}',
     ].join('')
@@ -458,7 +496,17 @@ window.__ModuleLoader__.load({
         try { ok = window.confirm('当前文件有未保存的修改，放弃并打开其他文件？') } catch (e) { ok = true }
         if (!ok) return
       }
-      setState({ loadingFile: true, selectedPath: path, message: '', messageKind: 'ok' })
+      // images (1.14): no text fetch — the panel previews them via the
+      // /dsh-editor/image endpoint, so no binary ever crosses the JSON API
+      if (isImagePath(path)) {
+        setState({
+          loadingFile: false, selectedPath: path, isImage: true,
+          content: '', highlightHtml: '', dirty: false, preview: false,
+          menu: null, message: '', messageKind: 'ok',
+        })
+        return
+      }
+      setState({ loadingFile: true, selectedPath: path, isImage: false, message: '', messageKind: 'ok' })
       try {
         const data = await api('/dsh-editor/file?root=' + encodeURIComponent(state.rootId) + '&path=' + encodeURIComponent(path))
         const content = data.content
@@ -466,13 +514,14 @@ window.__ModuleLoader__.load({
         if (content.length <= MAX_HIGHLIGHT_CHARS) {
           try { highlightHtml = buildHighlight(content, detectLang(path)) } catch (e) { /* plain */ }
         }
-        setState({ loadingFile: false, content, highlightHtml, dirty: false, preview: false, menu: null })
+        setState({ loadingFile: false, isImage: false, content, highlightHtml, dirty: false, preview: false, menu: null })
       } catch (e) {
         setState({ loadingFile: false, message: e.message, messageKind: 'err' })
       }
     }
 
     async function saveFile() {
+      if (state.isImage) return // images are read-only previews (1.14)
       if (!state.selectedPath || state.saving || state.dirty === false) {
         if (!state.selectedPath) return
         if (state.dirty === false) { setState({ message: '没有需要保存的修改', messageKind: 'ok' }); return }
@@ -547,6 +596,24 @@ window.__ModuleLoader__.load({
       return EXT_LANG[ext] || 'text'
     }
 
+    /**
+     * Image extensions the editor previews instead of editing (1.14). Must
+     * stay in sync with IMAGE_FILE_RE in the node half (svg stays editable
+     * text, so it is deliberately absent here).
+     */
+    const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|bmp|ico|avif)$/i
+    function isImagePath(path) {
+      return IMAGE_EXT_RE.test(String(path || ''))
+    }
+
+    /** "1\n2\n…\nN" gutter text for the line-number column (1.14). */
+    function buildLineNumbers(count) {
+      const n = Math.max(1, count | 0)
+      const nums = new Array(n)
+      for (let i = 0; i < n; i++) nums[i] = i + 1
+      return nums.join('\n')
+    }
+
     /** Accent dot color per language (file tree). */
     const LANG_COLORS = {
       js: '#f7df1e', jsx: '#61dafb', ts: '#3178c6', tsx: '#3178c6', json: '#8a8a3a',
@@ -554,7 +621,7 @@ window.__ModuleLoader__.load({
       cpp: '#f34b7d', cs: '#178600', swift: '#f05138', kt: '#a97bff', sh: '#89e051',
       ps1: '#5391fe', yaml: '#cb171e', toml: '#9c4221', sql: '#e38c00', php: '#4f5d95',
       rb: '#701516', html: '#e34c26', xml: '#0060ac', css: '#563d7c', md: '#083fa1',
-      ini: '#888888', text: '#9aa4b2',
+      ini: '#888888', text: '#9aa4b2', image: '#e85aad',
     }
     function langColor(lang) {
       return LANG_COLORS[lang] || '#9aa4b2'
@@ -808,13 +875,13 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Workspace id for the terminal: editor-mode tree root first, then the
-     * current conversation session's workspace (both modes), else '' (the
-     * node half falls back to the first registry workspace).
+     * The CURRENT session's project directory (its canonical `cwd` path). The
+     * dsh session list exposes cwd — NOT a workspaceId — so this is what the
+     * terminal uses to follow the currently selected project (1.13).
      *
      * HOOK RULE: this is a React hook — it must be called unconditionally at
      * the top of a component's render (never inside effects/handlers, never
-     * behind a condition), or React throws. Returns the workspaceId of the
+     * behind a condition), or React throws. Returns the cwd path of the
      * current session when available.
      */
     function useTermSessionWorkspace(props) {
@@ -825,25 +892,56 @@ window.__ModuleLoader__.load({
         const current = list && list.current
         const byId = list && list.byId
         const session = current !== undefined && current !== null && byId ? (byId[current] || undefined) : undefined
-        if (session && session.workspaceId) return session.workspaceId
+        if (session && session.cwd) return session.cwd
+        if (session && session.workspaceId) return session.workspaceId // safety, if ever exposed
       } catch (e) { /* no sessions data available */ }
       return ''
     }
 
-    /** Pure root computation (no hooks): tree root wins, then session workspace. */
-    function termRootFor(sessionWorkspace) {
-      return state.rootId || sessionWorkspace || ''
+    /**
+     * Pure project resolution (no hooks). 1.13: the "currently selected
+     * project" wins per mode — editor mode opens under the file-tree project
+     * root, conversation mode under the CURRENT session's directory (so
+     * switching sessions/projects moves the terminal's starting path with it).
+     * Returns { root, cwd }: `root` is a workspace registry id (when it can be
+     * matched), `cwd` the exact directory the new shell should start in.
+     */
+    function termRootFor(sessionCwd) {
+      const norm = (p) => String(p || '').replace(/[\\/]+$/, '')
+      const roots = Array.isArray(state.roots) ? state.roots : []
+      const byId = (id) => roots.find((r) => r && String(r.id) === String(id))
+      const byPath = (path) => {
+        const t = norm(path).toLowerCase()
+        return roots.find((r) => r && r.path && norm(r.path).toLowerCase() === t)
+      }
+      let root = ''
+      let cwd = ''
+      if (state.mode) {
+        const r = byId(state.rootId)
+        if (r && r.path) { root = r.id; cwd = r.path }
+        else if (sessionCwd) { const m = byPath(sessionCwd); root = m ? m.id : ''; cwd = sessionCwd }
+        else { root = state.rootId || ''; cwd = '' }
+      } else if (sessionCwd) {
+        const m = byPath(sessionCwd)
+        root = m ? m.id : ''
+        cwd = sessionCwd
+      } else {
+        root = state.rootId || ''
+        const r = byId(root)
+        cwd = r ? r.path : ''
+      }
+      return { root, cwd }
     }
 
-    /** Open a native terminal rooted at the current workspace. */
-    async function openTerminal(rootId) {
+    /** Open a native terminal at the current project (root id + cwd path). */
+    async function openTerminal(rootId, cwd) {
       if (state.terminalBusy) return
       setState({ terminalBusy: true })
       try {
         const res = await fetch('/dsh-editor-terminal/open', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ root: rootId || '' }),
+          body: JSON.stringify({ root: rootId || '', cwd: cwd || '' }),
         })
         let data = null
         try { data = await res.json() } catch (e) { /* non-JSON body */ }
@@ -865,9 +963,9 @@ window.__ModuleLoader__.load({
       const wide = !props || props.wide !== false
       const rail = !wide
       // hooks FIRST, unconditionally (never behind a condition)
-      const rootRef = React.useRef('')
-      const sessionWorkspace = useTermSessionWorkspace(props)
-      rootRef.current = termRootFor(sessionWorkspace)
+      const projRef = React.useRef({ root: '', cwd: '' })
+      const sessionCwd = useTermSessionWorkspace(props)
+      projRef.current = termRootFor(sessionCwd)
       const base = {
         boxSizing: 'border-box', cursor: 'pointer',
         color: 'var(--dsw-alias-label-primary, #1f2328)',
@@ -882,8 +980,8 @@ window.__ModuleLoader__.load({
       const onLeave = (e) => { e.currentTarget.style.background = 'transparent' }
       return React.createElement('button', {
         type: 'button',
-        onClick: () => setTerminalOpen(!state.terminalOpen, rootRef.current),
-        title: state.terminalOpen ? '关闭内置终端面板' : '打开内置终端面板（Qoder 式，当前工作区目录）',
+        onClick: () => setTerminalOpen(!state.terminalOpen, projRef.current),
+        title: state.terminalOpen ? '关闭内置终端面板' : '打开内置终端面板（Qoder 式，当前项目目录）',
         'aria-label': '打开终端',
         disabled: state.terminalBusy,
         style: buttonStyle,
@@ -1279,8 +1377,8 @@ window.__ModuleLoader__.load({
             this.cursor.r = Math.max(0, Math.min(this.rows - 1, n(0) - 1))
             this.cursor.c = Math.max(0, Math.min(this.cols - 1, n(1) - 1))
             break
-          case 'J': this.eraseDisplay(n(0)); break
-          case 'K': this.eraseLine(n(0)); break
+          case 'J': this.eraseDisplay(params.length === 0 ? 0 : n(0)); break
+          case 'K': this.eraseLine(params.length === 0 ? 0 : n(0)); break
           case 'X': this.eraseChars(n(0)); break
           case 'P': this.deleteChars(n(0)); break
           case '@': this.insertChars(n(0)); break
@@ -1311,6 +1409,22 @@ window.__ModuleLoader__.load({
         })
         if (rows > this.rows) {
           for (let i = 0; i < rows - this.rows; i++) nextLines.push(this.newLine())
+        } else if (rows < this.rows) {
+          // shrink: keep a `rows`-line window that still contains the cursor
+          // line (bottom-anchored for flowing output, top-anchored when the
+          // cursor sits at the top — e.g. a prompt written before the panel
+          // metrics applied). 1.13: previously the extra top lines survived,
+          // so that prompt could end up above the visible screen.
+          const absCursor = nextLines.length - this.rows + this.cursor.r
+          const winStart = Math.max(0, Math.min(nextLines.length - rows, absCursor))
+          const win = nextLines.slice(winStart, winStart + rows)
+          this.lines = win
+          this.cols = cols
+          this.rows = rows
+          this.cursor.r = absCursor - winStart
+          this.cursor.c = Math.max(0, Math.min(cols - 1, this.cursor.c))
+          this.dirtyAll = true
+          return
         }
         this.lines = nextLines
         this.cols = cols
@@ -1333,12 +1447,22 @@ window.__ModuleLoader__.load({
         }
         return out.join('\n').replace(/\n+$/, '')
       }
-      /** HTML for one line (plain text when unstyled, spans per style run). */
+      /** HTML for one line (plain text when unstyled, spans per style run).
+       *  1.13: trailing UNSTYLED spaces are trimmed so a short prompt line
+       *  never renders a full-width run of invisible padding cells. */
       renderLineHtml(line) {
         let html = ''
         let buf = ''
         let cur = -1
         const cols = line.ch.length
+        // last cell that is either a visible char or carries a style (styled
+        // spaces keep their background); cells after it are plain padding
+        let lastKeep = -1
+        for (let i = 0; i < cols; i++) {
+          const ch = line.ch[i]
+          if (ch === '\0') continue
+          if (ch !== ' ' || line.st[i] !== 0) lastKeep = i
+        }
         const push = () => {
           if (!buf) return
           if (cur === 0 || cur === -1) html += escapeHtml(buf)
@@ -1358,7 +1482,7 @@ window.__ModuleLoader__.load({
           }
           buf = ''
         }
-        for (let i = 0; i < cols; i++) {
+        for (let i = 0; i <= lastKeep; i++) {
           const ch = line.ch[i]
           if (ch === '\0') continue
           const st = line.st[i]
@@ -1371,19 +1495,23 @@ window.__ModuleLoader__.load({
     }
 
     // ── embedded terminal wiring (ws + panel) ──────────────────────────────
+    // 1.13: VS Code style terminal list. One WebSocket multiplexes every tab;
+    // each frame carries the target session's `sid`. Each session owns its own
+    // TermEmu grid + status; the viewport renders the ACTIVE session only.
 
-    let termEmu = null // created lazily with panel dims
     let termEmuEls = null // { viewport, lines: [], ta, cursor, probe }
     let termRenderTimer = null
+    let termActiveSid = null // sid of the session currently rendered
+    let termPendingNew = false // a 'new' session request is in flight
+    const termSessions = new Map() // sid -> { sid, emu, status, cwd, shell, pid, exited, title, seq, histLoaded }
     const termNet = {
       ws: null,
-      status: 'closed',
-      cwd: '',
-      shell: '',
-      pid: 0,
       reconnectTimer: null,
       discard: false,
       failCount: 0, // consecutive connect failures (for the error banner)
+      lastRoot: '', // workspace id for NEW sessions
+      lastCwd: '', // exact project directory for NEW sessions (1.13)
+      lastActiveSid: null,
     }
 
     function termStatusText() {
@@ -1402,24 +1530,128 @@ window.__ModuleLoader__.load({
       setState(p)
     }
 
+    /** Session record (created lazily when the server first names a sid). */
+    function termSessionRec(sid) {
+      let rec = termSessions.get(sid)
+      if (!rec) {
+        rec = {
+          sid, emu: null, status: 'closed', cwd: '', shell: '', pid: 0,
+          exited: false, title: '', seq: 0, histLoaded: false,
+        }
+        termSessions.set(sid, rec)
+      }
+      return rec
+    }
+
+    /** Current panel grid dims (fallback 100x24 before the viewport mounts). */
+    function termPanelDims() {
+      const els = termEmuEls
+      if (!els || !els.viewport || !els.viewport.clientWidth) return { cols: 100, rows: 24 }
+      const cellW = Math.max(1, els.cellW)
+      const cellH = Math.max(1, els.cellH)
+      const cols = Math.max(20, Math.floor((els.viewport.clientWidth - 20) / cellW))
+      const rows = Math.max(5, Math.floor((els.viewport.clientHeight - 12) / cellH))
+      return { cols, rows }
+    }
+
+    /** Create a session's emulator at the PANEL dims so history replay and the
+     *  first render already match the viewport (avoids a 100x24 → panel resize
+     *  that could push fresh output above the visible screen). */
+    function termSessionEmu(sid) {
+      const rec = termSessionRec(sid)
+      if (!rec.emu) {
+        const dims = termPanelDims()
+        rec.emu = new TermEmu(dims.cols, dims.rows)
+      }
+      return rec.emu
+    }
+
+    /** The emulator of the active session (or null). */
+    function termActiveEmu() {
+      const rec = termActiveSid ? termSessions.get(termActiveSid) : null
+      return rec && rec.emu ? rec.emu : null
+    }
+
+    /** Tab label: `PowerShell` / `CMD`, numbered per shell from the 2nd tab. */
+    function termTabTitle(shell, seq) {
+      const base = shell === 'cmd.exe' ? 'CMD' : 'PowerShell'
+      return seq <= 1 ? base : base + ' ' + seq
+    }
+
+    /** Rebuild state.termTabs (the React tab bar) from the session map. */
+    function termSyncTabs() {
+      const tabs = []
+      for (const rec of termSessions.values()) {
+        tabs.push({
+          sid: rec.sid,
+          title: rec.title || termTabTitle(rec.shell || 'powershell.exe', 1),
+          cwd: rec.cwd,
+          shell: rec.shell,
+          exited: rec.exited,
+        })
+      }
+      setState({ termTabs: tabs, termActiveSid: termActiveSid })
+    }
+
+    /** Adopt a server-side session into the local tab map. */
+    function termAdoptSession(sid, shell, cwd, exited) {
+      const rec = termSessionRec(sid)
+      const prevShell = rec.shell
+      rec.shell = shell || rec.shell
+      rec.cwd = cwd || rec.cwd
+      rec.exited = !!exited
+      if (!rec.title) {
+        // number per shell (PowerShell, CMD, PowerShell 2, ...)
+        let same = 0
+        for (const other of termSessions.values()) {
+          if (other.sid !== sid && other.shell === rec.shell) same += 1
+        }
+        rec.seq = same + 1
+        rec.title = termTabTitle(rec.shell, rec.seq)
+      } else if (prevShell && shell && prevShell !== shell) {
+        // restarted with a different shell — reflect it in the tab label
+        rec.title = termTabTitle(rec.shell, rec.seq || 1)
+      }
+      return rec
+    }
+
+    /** Remove a session locally (idempotent; server also broadcasts 'removed'). */
+    function termDropSession(sid) {
+      if (!termSessions.has(sid)) return
+      termSessions.delete(sid)
+      if (termNet.lastActiveSid === sid) termNet.lastActiveSid = null
+      if (termActiveSid === sid) {
+        const sids = Array.from(termSessions.keys())
+        if (sids.length > 0) {
+          termActivate(sids[sids.length - 1], true)
+        } else {
+          termActiveSid = null
+          termSyncTabs()
+          termRenderNow()
+        }
+      } else {
+        termSyncTabs()
+      }
+    }
+
     function termScheduleReconnect() {
       if (termNet.reconnectTimer !== null || !state.terminalOpen) return
       termNet.reconnectTimer = setTimeout(() => {
         termNet.reconnectTimer = null
-        if (state.terminalOpen) termConnect(termNet.lastRoot)
+        if (state.terminalOpen) termConnect(termNet.lastRoot, termNet.lastCwd)
       }, 1500)
     }
 
-    function termConnect(rootId) {
+    function termConnect(rootId, cwd) {
       if (termNet.ws && (termNet.ws.readyState === 0 || termNet.ws.readyState === 1)) return
       if (typeof WebSocket === 'undefined') return
       termNet.lastRoot = rootId || termNet.lastRoot || ''
-      termEnsureEmu() // the init frame always carries the current grid dims
+      termNet.lastCwd = cwd || termNet.lastCwd || ''
       termSetStatus('connecting', { termError: '' })
       let ws
       try {
         const proto = window.location.protocol === 'https:' ? 'wss://' : 'ws://'
-        ws = new WebSocket(proto + window.location.host + '/dsh-editor-terminal/ws?root=' + encodeURIComponent(rootId || ''))
+        ws = new WebSocket(proto + window.location.host + '/dsh-editor-terminal/ws?root=' + encodeURIComponent(termNet.lastRoot) + '&cwd=' + encodeURIComponent(termNet.lastCwd))
       } catch (e) {
         termSetStatus('error', { termError: String(e && e.message ? e.message : e) })
         return
@@ -1427,36 +1659,104 @@ window.__ModuleLoader__.load({
       termNet.ws = ws
       ws.onopen = () => {
         termSetStatus('connecting', { termError: '' })
-        if (termEmu) {
-          try {
-            ws.send(JSON.stringify({
-              t: 'init',
-              cols: termEmu.cols,
-              rows: termEmu.rows,
-              shell: state.termShell === 'cmd' ? 'cmd' : undefined,
-            }))
-          } catch (e) { /* ignore */ }
-        }
+        // ask for the live session list; the panel then attaches or creates
+        try { ws.send(JSON.stringify({ t: 'list' })) } catch (e) { /* ignore */ }
       }
       ws.onmessage = (ev) => {
         let msg = null
         try { msg = JSON.parse(ev.data) } catch (e) { return }
         if (!msg || typeof msg !== 'object') return
+        if (msg.t === 'list') {
+          const sessions = Array.isArray(msg.sessions) ? msg.sessions : []
+          // adopt every server session into the local tab map; mark history for
+          // replay so a reopened panel refreshes output produced while closed
+          for (const s of sessions) {
+            const rec = termAdoptSession(String(s.sid), s.shell, s.cwd, s.exited)
+            rec.histLoaded = false
+            if (rec.status !== 'open' && rec.status !== 'connecting') rec.status = s.exited ? 'exited' : 'closed'
+          }
+          // drop local tabs the server no longer has
+          const live = new Set(sessions.map((s) => String(s.sid)))
+          for (const sid of Array.from(termSessions.keys())) {
+            if (!live.has(sid)) termSessions.delete(sid)
+          }
+          if (termActiveSid && !termSessions.has(termActiveSid)) termActiveSid = null
+          if (sessions.length === 0) {
+            // no sessions at all → create the first terminal (current project)
+            termPendingNew = true
+            termActiveSid = null
+            const dims = termActiveEmu() || new TermEmu(100, 24)
+            termSend({ t: 'new', shell: state.termShell === 'cmd' ? 'cmd' : undefined, cols: dims.cols, rows: dims.rows, root: termNet.lastRoot, cwd: termNet.lastCwd })
+            termSyncTabs()
+            return
+          }
+          // attach to the previously active session, else the newest
+          const targetSid = termNet.lastActiveSid && termSessions.has(termNet.lastActiveSid)
+            ? termNet.lastActiveSid
+            : String(sessions[sessions.length - 1].sid)
+          termActivate(targetSid, true)
+          return
+        }
         if (msg.t === 'meta') {
-          termNet.cwd = msg.cwd || ''
-          termNet.shell = msg.shell || ''
-          termNet.pid = msg.pid || 0
-          setState({ termMeta: { cwd: termNet.cwd, shell: termNet.shell, pid: termNet.pid }, termStatus: 'open' })
-        } else if (msg.t === 'hist') {
-          if (termEmu) { termEmu.reset(); termEmu.feed(msg.d || '') }
-          termRenderNow()
-        } else if (msg.t === 'out') {
-          if (termEmu) termEmu.feed(msg.d || '')
-          termScheduleRender()
-        } else if (msg.t === 'exit') {
-          termSetStatus('exited', { termError: '' })
-        } else if (msg.t === 'err') {
-          termSetStatus('error', { termError: msg.m || '终端不可用' })
+          const sid = String(msg.sid || '')
+          if (!sid) return
+          const rec = termAdoptSession(sid, msg.shell, msg.cwd, false)
+          rec.pid = msg.pid || 0
+          rec.status = 'open'
+          rec.exited = false
+          if (termPendingNew) {
+            // the freshly created tab becomes the active one
+            termPendingNew = false
+            termActivate(sid, true)
+          } else if (termActiveSid === sid) {
+            termNet.lastActiveSid = sid
+            setState({ termMeta: { cwd: rec.cwd, shell: rec.shell, pid: rec.pid }, termStatus: 'open' })
+          }
+          termSyncTabs()
+          return
+        }
+        if (msg.t === 'hist') {
+          const sid = String(msg.sid || '')
+          const rec = sid ? termSessions.get(sid) : null
+          if (!rec) return
+          if (!rec.histLoaded) {
+            rec.histLoaded = true
+            const emu = rec.emu || termSessionEmu(sid)
+            emu.reset()
+            emu.feed(msg.d || '')
+            if (termActiveSid === sid) termRenderNow()
+          }
+          return
+        }
+        if (msg.t === 'out') {
+          const sid = String(msg.sid || '')
+          const rec = sid ? termSessions.get(sid) : null
+          if (!rec) return
+          if (!rec.emu) rec.emu = termSessionEmu(sid)
+          rec.emu.feed(msg.d || '')
+          if (termActiveSid === sid) termScheduleRender()
+          return
+        }
+        if (msg.t === 'exit') {
+          const sid = String(msg.sid || '')
+          const rec = sid ? termSessions.get(sid) : null
+          if (!rec) return
+          rec.exited = true
+          rec.status = 'exited'
+          if (termActiveSid === sid) termSetStatus('exited', { termError: '' })
+          termSyncTabs()
+          return
+        }
+        if (msg.t === 'removed') {
+          termDropSession(String(msg.sid || ''))
+          return
+        }
+        if (msg.t === 'err') {
+          const sid = msg.sid ? String(msg.sid) : null
+          if (!sid || termActiveSid === sid) {
+            termSetStatus('error', { termError: msg.m || '终端不可用' })
+          }
+          return
         }
       }
       ws.onclose = () => {
@@ -1484,6 +1784,60 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /** Switch the active tab; asks the server to re-send that session's state. */
+    function termActivate(sid, silent) {
+      if (termActiveSid === sid && !silent) return
+      termActiveSid = sid
+      termNet.lastActiveSid = sid
+      const rec = termSessions.get(sid)
+      if (rec) {
+        if (rec.status === 'exited' || rec.exited) {
+          termSetStatus('exited', { termError: '' })
+        } else if (rec.status === 'error') {
+          termSetStatus('error', { termError: state.termError })
+        } else {
+          termSetStatus('open', {
+            termMeta: { cwd: rec.cwd, shell: rec.shell, pid: rec.pid },
+          })
+        }
+        const emu = rec.emu || termSessionEmu(sid)
+        termSend({ t: 'attach', sid, cols: emu.cols, rows: emu.rows })
+      } else {
+        termSetStatus('closed')
+      }
+      termSyncTabs()
+      termRenderNow()
+    }
+
+    /** Create a new terminal (new tab) at the CURRENT project (1.13). */
+    function termNewSession(rootId, cwd) {
+      if (termNet.ws && (termNet.ws.readyState === 0 || termNet.ws.readyState === 1)) {
+        termPendingNew = true
+        const emu = termActiveEmu() || new TermEmu(100, 24)
+        termSend({
+          t: 'new',
+          shell: state.termShell === 'cmd' ? 'cmd' : undefined,
+          cols: emu.cols,
+          rows: emu.rows,
+          root: rootId || termNet.lastRoot || '',
+          cwd: cwd || termNet.lastCwd || '',
+        })
+        termSetStatus('connecting', { termError: '' })
+      }
+    }
+
+    /** Close + kill one tab (VS Code: the × on a tab kills its shell). */
+    function termCloseSession(sid) {
+      const rec = termSessions.get(sid)
+      if (!rec) return
+      termSend({ t: 'close', sid })
+      termDropSession(sid)
+      // closing the LAST tab hides the panel (like VS Code)
+      if (termSessions.size === 0) {
+        setTerminalOpen(false)
+      }
+    }
+
     function termClose() {
       termNet.discard = true
       const ws = termNet.ws
@@ -1494,16 +1848,11 @@ window.__ModuleLoader__.load({
     }
 
     function termRestart(shell) {
-      if (termEmu) { termEmu.reset() }
+      const rec = termActiveSid ? termSessions.get(termActiveSid) : null
+      if (rec && rec.emu) { rec.emu.reset(); rec.histLoaded = false }
       termRenderNow()
-      termSend({ t: 'restart', shell: shell === 'cmd' ? 'cmd' : undefined })
+      termSend({ t: 'restart', sid: termActiveSid || undefined, shell: shell === 'cmd' ? 'cmd' : undefined })
       termSetStatus('connecting', { termError: '' })
-    }
-
-    function termEnsureEmu() {
-      if (termEmu) return termEmu
-      termEmu = new TermEmu(100, 24)
-      return termEmu
     }
 
     /** Build the DOM scaffold for the terminal viewport (once per mount). */
@@ -1559,16 +1908,17 @@ window.__ModuleLoader__.load({
 
     function termUpdateMetrics() {
       const els = termEmuEls
-      if (!els || !termEmu) return
+      const emu = termActiveEmu()
+      if (!els || !emu) return
       els.cellW = Math.max(1, els.probe.offsetWidth / 10)
       els.cellH = Math.max(1, els.probe.offsetHeight)
       const w = els.viewport.clientWidth - 20
       const h = els.viewport.clientHeight - 12
       const cols = Math.max(20, Math.floor(w / els.cellW))
       const rows = Math.max(5, Math.floor(h / els.cellH))
-      if (cols !== termEmu.cols || rows !== termEmu.rows) {
-        termEmu.resize(cols, rows)
-        termSend({ t: 'resize', cols: termEmu.cols, rows: termEmu.rows })
+      if (cols !== emu.cols || rows !== emu.rows) {
+        emu.resize(cols, rows)
+        if (termActiveSid) termSend({ t: 'resize', sid: termActiveSid, cols: emu.cols, rows: emu.rows })
         termScheduleRender()
       }
     }
@@ -1583,7 +1933,7 @@ window.__ModuleLoader__.load({
 
     function termRenderNow() {
       const els = termEmuEls
-      const emu = termEmu
+      const emu = termActiveEmu()
       if (!els || !emu) return
       const start = Math.max(0, emu.lines.length - emu.rows - emu.offset)
       for (let i = 0; i < emu.rows; i++) {
@@ -1600,7 +1950,20 @@ window.__ModuleLoader__.load({
       }
       // cursor (only on the live view)
       if (emu.offset === 0 && emu.cursorVisible) {
-        els.cursor.style.left = (10 + emu.cursor.c * els.cellW) + 'px'
+        // 1.13: some shells park the cursor in blank padding after the prompt
+        // (cmd's full-width prompt, PSReadLine's \x1b[1C). Snap it back so it
+        // always hugs the last visible character — unless the user is editing
+        // mid-line (then cells ahead are non-blank and we keep the true column).
+        let curCol = emu.cursor.c
+        const curLine = emu.lines[emu.lines.length - emu.rows + emu.cursor.r]
+        if (curLine) {
+          let lastVisible = -1
+          for (let i = 0; i < curLine.ch.length; i++) {
+            if (curLine.ch[i] !== ' ' && curLine.ch[i] !== '\0') lastVisible = i
+          }
+          if (curCol > lastVisible + 1) curCol = lastVisible + 1
+        }
+        els.cursor.style.left = (10 + curCol * els.cellW) + 'px'
         els.cursor.style.top = (6 + emu.cursor.r * els.cellH) + 'px'
         els.cursor.style.width = els.cellW + 'px'
         els.cursor.style.height = els.cellH + 'px'
@@ -1648,7 +2011,7 @@ window.__ModuleLoader__.load({
         const seq = termKeySequence(e)
         if (seq !== null) {
           e.preventDefault()
-          termSend({ t: 'input', d: seq })
+          termSend({ t: 'input', sid: termActiveSid || undefined, d: seq })
           return
         }
         // Ctrl+V / Cmd+V: let the paste event deliver the text
@@ -1659,17 +2022,17 @@ window.__ModuleLoader__.load({
         if (e.isComposing) return
         const text = ta.value
         ta.value = ''
-        if (text) termSend({ t: 'input', d: text })
+        if (text) termSend({ t: 'input', sid: termActiveSid || undefined, d: text })
       }
       ta.oncompositionend = (e) => {
         const text = e.data || ''
         ta.value = ''
-        if (text) termSend({ t: 'input', d: text })
+        if (text) termSend({ t: 'input', sid: termActiveSid || undefined, d: text })
       }
       ta.onpaste = (e) => {
         e.preventDefault()
         const text = (e.clipboardData && e.clipboardData.getData('text')) || ''
-        if (text) termSend({ t: 'input', d: text })
+        if (text) termSend({ t: 'input', sid: termActiveSid || undefined, d: text })
       }
     }
 
@@ -1682,21 +2045,20 @@ window.__ModuleLoader__.load({
       // panel opens ([] would run once at mount while the panel is closed
       // and never initialize the viewport).
       const viewportRef = React.useRef(null)
-      const rootRef = React.useRef('')
-      const sessionWorkspace = useTermSessionWorkspace(props)
-      rootRef.current = termRootFor(sessionWorkspace)
+      const projRef = React.useRef({ root: '', cwd: '' })
+      const sessionCwd = useTermSessionWorkspace(props)
+      projRef.current = termRootFor(sessionCwd)
 
       React.useEffect(() => {
         const viewportEl = viewportRef.current
         if (!viewportEl) return undefined
         try {
-          termEnsureEmu()
           termEnsureEls(viewportEl)
           termSetupInput()
           termUpdateMetrics()
           termMeasureLeft()
           if (!(termNet.ws && (termNet.ws.readyState === 0 || termNet.ws.readyState === 1))) {
-            termConnect(rootRef.current)
+            termConnect(projRef.current.root, projRef.current.cwd)
           }
         } catch (e) {
           // surface ANY panel-mount failure instead of a silent blank panel
@@ -1715,12 +2077,13 @@ window.__ModuleLoader__.load({
           ro.observe(viewportEl)
         } catch (e) { /* no ResizeObserver */ }
         const onWheel = (e) => {
-          if (!termEmu) return
-          const before = termEmu.offset
-          const max = Math.max(0, termEmu.lines.length - termEmu.rows)
-          if (e.deltaY > 0) termEmu.offset = Math.min(max, termEmu.offset + 3)
-          else if (e.deltaY < 0) termEmu.offset = Math.max(0, termEmu.offset - 3)
-          if (termEmu.offset !== before) termRenderNow()
+          const emu = termActiveEmu()
+          if (!emu) return
+          const before = emu.offset
+          const max = Math.max(0, emu.lines.length - emu.rows)
+          if (e.deltaY > 0) emu.offset = Math.min(max, emu.offset + 3)
+          else if (e.deltaY < 0) emu.offset = Math.max(0, emu.offset - 3)
+          if (emu.offset !== before) termRenderNow()
         }
         viewportEl.addEventListener('wheel', onWheel, { passive: true })
         return () => {
@@ -1735,11 +2098,36 @@ window.__ModuleLoader__.load({
 
       if (!state.terminalOpen) return null
 
+      // ── terminal list (1.13): VS Code style tab bar ──────────────────────
+      const tabs = (state.termTabs || []).map((tab) => React.createElement('div', {
+        key: tab.sid,
+        role: 'tab',
+        'aria-selected': tab.sid === state.termActiveSid,
+        className: 'dsh-editor-term-tab' + (tab.sid === state.termActiveSid ? ' active' : ''),
+        title: (tab.exited ? '[已退出] ' : '') + (tab.cwd || tab.title),
+        onClick: () => termActivate(tab.sid),
+      },
+        React.createElement('span', { className: 'dsh-editor-term-tab-label' }, tab.title),
+        React.createElement('button', {
+          type: 'button',
+          className: 'dsh-editor-term-tab-close',
+          title: '关闭终端（终止该会话）',
+          'aria-label': '关闭终端 ' + tab.title,
+          onClick: (e) => { e.stopPropagation(); termCloseSession(tab.sid) },
+        }, '×'),
+      ))
+      const tabsRow = React.createElement('div', { className: 'dsh-editor-term-tabs', role: 'tablist', 'aria-label': '终端列表' },
+        tabs,
+        React.createElement('button', {
+          type: 'button',
+          className: 'dsh-editor-term-tab-add',
+          title: '新建终端（在当前项目路径下）',
+          'aria-label': '新建终端',
+          onClick: () => termNewSession(projRef.current.root, projRef.current.cwd),
+        }, '+'),
+      )
+
       const header = React.createElement('div', { className: 'dsh-editor-term-head' },
-        React.createElement('span', { className: 'dsh-editor-term-head-title' },
-          React.createElement(FallbackTerminalIcon, { size: 14 }),
-          '终端',
-        ),
         React.createElement('span', { className: 'dsh-editor-term-dot ' + state.termStatus }),
         React.createElement('span', { className: 'dsh-editor-term-shell' }, termStatusText()),
         React.createElement('span', { className: 'dsh-editor-term-cwd', title: (state.termMeta && state.termMeta.cwd) || '' },
@@ -1747,7 +2135,7 @@ window.__ModuleLoader__.load({
         ),
         React.createElement('select', {
           className: 'dsh-editor-term-select',
-          title: '选择终端 Shell',
+          title: '选择终端 Shell（重新启动当前终端）',
           value: state.termShell,
           onChange: (e) => { setState({ termShell: e.target.value }); termRestart(e.target.value) },
         },
@@ -1757,14 +2145,14 @@ window.__ModuleLoader__.load({
         React.createElement('button', {
           type: 'button',
           className: 'dsh-editor-term-btn',
-          title: '重新启动终端（会终止当前会话）',
+          title: '重新启动当前终端（会终止该会话）',
           onClick: () => termRestart(state.termShell),
         }, '重新启动'),
         React.createElement('button', {
           type: 'button',
           className: 'dsh-editor-term-btn',
-          title: '在系统终端中打开当前工作区目录',
-          onClick: () => openTerminal(rootRef.current),
+          title: '在系统终端中打开当前项目目录',
+          onClick: () => openTerminal(projRef.current.root, projRef.current.cwd),
         }, '外部终端'),
         React.createElement('button', {
           type: 'button',
@@ -1785,20 +2173,24 @@ window.__ModuleLoader__.load({
         : null
 
       return React.createElement('div', { className: 'dsh-editor-term-panel' },
+        tabsRow,
         header,
         banner,
         viewport,
       )
     }
 
-    /** Toggle the embedded terminal panel (Qoder-style). */
-    function setTerminalOpen(open, rootId) {
+    /** Toggle the embedded terminal panel (Qoder-style). `proj` is either
+     *  { root, cwd } (1.13) or a plain workspace id string (legacy callers). */
+    function setTerminalOpen(open, proj) {
       setState({ terminalOpen: !!open })
       try { document.body.classList.toggle('dsh-editor-terminal-open', !!open) } catch (e) { /* ignore */ }
       if (open) {
-        termNet.lastRoot = rootId || termNet.lastRoot || ''
-        termEnsureEmu()
-        termConnect(termNet.lastRoot)
+        const root = proj && typeof proj === 'object' ? (proj.root || '') : (proj || '')
+        const cwd = proj && typeof proj === 'object' ? (proj.cwd || '') : ''
+        termNet.lastRoot = root || termNet.lastRoot || ''
+        termNet.lastCwd = cwd || termNet.lastCwd || ''
+        termConnect(termNet.lastRoot, termNet.lastCwd)
       } else {
         termClose()
       }
@@ -1824,7 +2216,9 @@ window.__ModuleLoader__.load({
           React.createElement(FolderIcon, { size: 15, open: isOpen }),
         )
       } else {
-        const lang = detectLang(node.path)
+        // image files (1.14) get a distinct dot color so they stand out in
+        // the tree even though they are not editable text
+        const lang = isImagePath(node.path) ? 'image' : detectLang(node.path)
         icon = React.createElement('span', { className: 'dsh-editor-node-dot', style: { background: langColor(lang) } })
       }
 
@@ -2070,6 +2464,7 @@ window.__ModuleLoader__.load({
       useForce()
       const preRef = React.useRef(null)
       const taRef = React.useRef(null)
+      const gutterRef = React.useRef(null)
       if (!state.mode) return null
         const sessionTabs = React.createElement(SessionTabsBar, props)
 
@@ -2115,13 +2510,16 @@ window.__ModuleLoader__.load({
         }
       }
 
-      // keep the highlight <pre> in sync with the transparent <textarea>
+      // keep the highlight <pre> AND the line-number gutter (1.14) in sync
+      // with the transparent <textarea>
       const onScroll = (e) => {
         const pre = preRef.current
         if (pre) {
           pre.scrollTop = e.target.scrollTop
           pre.scrollLeft = e.target.scrollLeft
         }
+        const gutter = gutterRef.current
+        if (gutter) gutter.scrollTop = e.target.scrollTop
       }
 
       const status = state.message
@@ -2130,8 +2528,9 @@ window.__ModuleLoader__.load({
             ? React.createElement('span', { className: 'dsh-editor-panel-status' }, '未保存')
             : null)
 
-      const langLabel = lang === 'text' ? '纯文本' : lang
-      const isMarkdown = lang === 'md'
+      const isImage = state.isImage === true
+      const langLabel = isImage ? '图片' : (lang === 'text' ? '纯文本' : lang)
+      const isMarkdown = !isImage && lang === 'md'
 
       // markdown preview toggle (top-right, before save)
       const previewBtn = isMarkdown
@@ -2179,6 +2578,22 @@ window.__ModuleLoader__.load({
         )
       }
 
+      // 1.14: line-number gutter — one number per logical line (no wrapping:
+      // white-space:pre on both panes), width grows with the digit count
+      const lineCount = state.content ? state.content.split('\n').length : 1
+      const gutterW = Math.max(44, String(lineCount).length * 8 + 16)
+
+      // 1.14: image files render a read-only preview instead of the editor
+      let imagePane = null
+      if (isImage && !state.loadingFile) {
+        const imgUrl = '/dsh-editor/image?root=' + encodeURIComponent(state.rootId || '')
+          + '&path=' + encodeURIComponent(state.selectedPath)
+        imagePane = React.createElement('div', { className: 'dsh-editor-image-view' },
+          React.createElement('img', { src: imgUrl, alt: state.selectedPath, draggable: false }),
+          React.createElement('div', { className: 'dsh-editor-image-name' }, state.selectedPath + '（图片，只读预览）'),
+        )
+      }
+
       return React.createElement('div', { className: 'dsh-editor-panel' },
         handles[0],
         handles[1],
@@ -2186,43 +2601,51 @@ window.__ModuleLoader__.load({
         menuEl,
         React.createElement('div', { className: 'dsh-editor-panel-header' },
           React.createElement('span', { className: 'dsh-editor-panel-path', title: state.selectedPath }, state.selectedPath),
-          React.createElement('span', { className: 'dsh-editor-panel-lang', title: '语法高亮语言' }, langLabel),
+          React.createElement('span', { className: 'dsh-editor-panel-lang', title: isImage ? '图片预览' : '语法高亮语言' }, langLabel),
           status,
           previewBtn,
           React.createElement('button', {
             type: 'button',
             className: 'dsh-editor-panel-save',
-            disabled: state.saving || state.loadingFile,
+            disabled: state.saving || state.loadingFile || isImage,
+            title: isImage ? '图片为只读预览，不能编辑' : '保存（Ctrl+S）',
             onClick: saveFile,
           }, state.saving ? '保存中…' : '保存'),
         ),
         state.loadingFile
           ? React.createElement('div', { className: 'dsh-editor-hint' }, '读取中…')
-          : React.createElement('div', { className: 'dsh-editor-editor' },
-              React.createElement('div', { className: 'dsh-editor-edit-col' },
-                React.createElement('pre', {
-                  className: 'dsh-editor-pre',
-                  ref: preRef,
-                  'aria-hidden': true,
-                  dangerouslySetInnerHTML: { __html: state.highlightHtml },
-                }),
-                React.createElement('textarea', {
-                  className: 'dsh-editor-textarea',
-                  ref: taRef,
-                  value: state.content,
-                  onChange: (e) => applyContent(e.target.value, true),
-                  onScroll: onScroll,
-                  onKeyDown: onKeyDown,
-                  onContextMenu: (e) => { e.preventDefault(); openContextMenu(e, e.target) },
-                  spellCheck: false,
-                  autoCapitalize: 'off',
-                  autoCorrect: 'off',
-                  wrap: 'off',
-                  placeholder: huge ? '文件过大，已关闭语法高亮' : '（空文件）',
-                }),
+          : isImage
+            ? imagePane
+            : React.createElement('div', { className: 'dsh-editor-editor' },
+                React.createElement('div', { className: 'dsh-editor-edit-col', style: { '--dsh-editor-gutter-w': gutterW + 'px' } },
+                  React.createElement('pre', {
+                    className: 'dsh-editor-gutter',
+                    ref: gutterRef,
+                    'aria-hidden': true,
+                  }, buildLineNumbers(lineCount)),
+                  React.createElement('pre', {
+                    className: 'dsh-editor-pre',
+                    ref: preRef,
+                    'aria-hidden': true,
+                    dangerouslySetInnerHTML: { __html: state.highlightHtml },
+                  }),
+                  React.createElement('textarea', {
+                    className: 'dsh-editor-textarea',
+                    ref: taRef,
+                    value: state.content,
+                    onChange: (e) => applyContent(e.target.value, true),
+                    onScroll: onScroll,
+                    onKeyDown: onKeyDown,
+                    onContextMenu: (e) => { e.preventDefault(); openContextMenu(e, e.target) },
+                    spellCheck: false,
+                    autoCapitalize: 'off',
+                    autoCorrect: 'off',
+                    wrap: 'off',
+                    placeholder: huge ? '文件过大，已关闭语法高亮' : '（空文件）',
+                  }),
+                ),
+                previewPane,
               ),
-              previewPane,
-            ),
       )
     }
 
@@ -2588,12 +3011,32 @@ window.__ModuleLoader__.load({
           status: () => state.termStatus,
           error: () => state.termError,
           meta: () => state.termMeta,
+          tabs: () => (state.termTabs || []).slice(),
+          activeSid: () => termActiveSid,
+          sessions: () => Array.from(termSessions.keys()),
           wsState: () => (termNet.ws ? termNet.ws.readyState : -1),
           wsUrl: () => (termNet.ws ? termNet.ws.url : ''),
-          emu: () => (termEmu ? { cols: termEmu.cols, rows: termEmu.rows, lines: termEmu.lines.length, offset: termEmu.offset } : null),
-          emuCursor: () => (termEmu ? { r: termEmu.cursor.r, c: termEmu.cursor.c, visible: termEmu.cursorVisible } : null),
+          emu: () => {
+            const emu = termActiveEmu()
+            return emu ? { cols: emu.cols, rows: emu.rows, lines: emu.lines.length, offset: emu.offset } : null
+          },
+          emuCursor: () => {
+            const emu = termActiveEmu()
+            return emu ? { r: emu.cursor.r, c: emu.cursor.c, visible: emu.cursorVisible } : null
+          },
+          emuText: () => {
+            const emu = termActiveEmu()
+            return emu ? emu.screenText() : null
+          },
+          emuLine0: () => {
+            const emu = termActiveEmu()
+            if (!emu || !emu.lines.length) return null
+            return emu.lines[0].ch.join('')
+          },
           els: () => (termEmuEls ? { lines: termEmuEls.lineEls.length, cellW: termEmuEls.cellW, cellH: termEmuEls.cellH } : null),
-          open: (rootId) => setTerminalOpen(true, rootId),
+          open: (rootId, cwd) => setTerminalOpen(true, { root: rootId || '', cwd: cwd || '' }),
+          newTab: (rootId, cwd) => termNewSession(rootId || '', cwd || ''),
+          closeTab: (sid) => termCloseSession(sid),
         }
       } catch (e) { /* no window (tests) */ }
 
@@ -2672,10 +3115,13 @@ window.__ModuleLoader__.load({
     exports._highlight = buildHighlight
     exports._detectLang = detectLang
     exports._escapeHtml = escapeHtml
+    exports._isImage = isImagePath
+    exports._lineNumbers = buildLineNumbers
     exports._testSelect = function (path, content, preview) {
       state.selectedPath = path
       state.content = content
       state.preview = !!preview
+      state.isImage = isImagePath(path)
       try { state.highlightHtml = buildHighlight(content, detectLang(path)) } catch (e) { /* plain */ }
       emit()
     }
@@ -2708,6 +3154,9 @@ window.__ModuleLoader__.load({
     exports._termPanelElement = function (props) { return React.createElement(TerminalPanel, props) }
     exports._testTerminalOpen = function (open) { state.terminalOpen = !!open; emit() }
     exports._testTreeRoot = function (rootId) { state.rootId = rootId || null; emit() }
+    exports._testSetRoots = function (roots) { state.roots = Array.isArray(roots) ? roots : []; emit() }
+    exports._testMode = function (on) { state.mode = !!on; emit() }
+    exports._termRootFor = function (sessionCwd) { return termRootFor(sessionCwd) }
     return module.exports
   },
 })

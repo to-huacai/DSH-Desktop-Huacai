@@ -4,8 +4,12 @@
 // server-renders the file tree and editor panel to catch render crashes.
 import { createRequire } from 'node:module'
 import { readFileSync } from 'node:fs'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const require = createRequire('C:/Users/花菜菜/AppData/Local/DSH-Desktop-Huacai/app/node_modules/@deepseek-ai/dsh/package.json')
+const here = dirname(fileURLToPath(import.meta.url))
+const appModules = join(process.env.LOCALAPPDATA || '', 'DSH-Desktop-Huacai', 'app', 'node_modules')
+const require = createRequire(join(appModules, '@deepseek-ai', 'dsh', 'package.json'))
 const React = require('react')
 const ReactDOMServer = require('react-dom/server')
 
@@ -41,7 +45,7 @@ globalThis.requestAnimationFrame = (fn) => { try { fn() } catch (e) {} }
 
 // ── load client ──
 let captured = null
-new Function('window', readFileSync('C:/Users/花菜菜/Desktop/to-deepseek/dsh-bundle/plugin/@local/dsh-editor/lib/client.js', 'utf8') + '; return null')({ __ModuleLoader__: { load(e) { captured = e } } })
+new Function('window', readFileSync(join(here, '..', 'dsh-bundle', 'plugin', '@local', 'dsh-editor', 'lib', 'client.js'), 'utf8') + '; return null')({ __ModuleLoader__: { load(e) { captured = e } } })
 const exports = captured.factory(require)
 
 // ── slots mock that captures components ──
@@ -170,6 +174,49 @@ exports._testSelect('index.js', 'const a = 1\n', false)
 const jsHtml = ReactDOMServer.renderToString(React.createElement(PanelComp, {}))
 if (jsHtml.includes('dsh-editor-panel-previewbtn')) throw new Error('preview button shown for non-md file')
 console.log('✓ non-markdown file has no preview button')
+
+// ── 1.14 line-number gutter: numbers rendered, width var set, no gutter for
+//    empty content edge cases ──
+exports._testSelect('src/index.js', 'const a = 1\nconst b = 2\nconst c = 3\n', false)
+const gutterHtml = ReactDOMServer.renderToString(React.createElement(PanelComp, {}))
+if (!gutterHtml.includes('dsh-editor-gutter')) throw new Error('gutter missing: ' + gutterHtml.slice(0, 300))
+if (!gutterHtml.includes('1\n2\n3')) throw new Error('gutter numbers 1-3 missing: ' + gutterHtml.slice(0, 400))
+if (!gutterHtml.includes('dsh-editor-gutter-w')) throw new Error('gutter width var missing')
+if (!gutterHtml.includes('dsh-editor-pre')) throw new Error('highlight pre missing beside gutter')
+if (!gutterHtml.includes('dsh-editor-textarea')) throw new Error('textarea missing beside gutter')
+// 4-digit lines → wider gutter
+exports._testSelect('big.js', 'a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\n', false)
+const bigGutterHtml = ReactDOMServer.renderToString(React.createElement(PanelComp, {}))
+if (!bigGutterHtml.includes('1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11')) throw new Error('gutter 1-11 missing')
+console.log('✓ 1.14 line-number gutter renders with synced numbers')
+
+// ── 1.14 image preview: image view instead of textarea, save disabled ──
+exports._testSelect('logo.png', '', false)
+const imgHtml = ReactDOMServer.renderToString(React.createElement(PanelComp, {}))
+if (!imgHtml.includes('dsh-editor-image-view')) throw new Error('image view missing: ' + imgHtml.slice(0, 300))
+if (!imgHtml.includes('/dsh-editor/image?root=')) throw new Error('image src endpoint missing')
+if (!imgHtml.includes('logo.png')) throw new Error('image name caption missing')
+if (imgHtml.includes('dsh-editor-textarea')) throw new Error('textarea should not render for image')
+if (!imgHtml.includes('disabled')) throw new Error('save button should be disabled for image')
+if (!imgHtml.includes('图片')) throw new Error('image lang label missing')
+// non-image must NOT be flagged as image
+exports._testSelect('plain.txt', 'hello', false)
+const txtHtml = ReactDOMServer.renderToString(React.createElement(PanelComp, {}))
+if (txtHtml.includes('dsh-editor-image-view')) throw new Error('text file wrongly treated as image')
+console.log('✓ 1.14 image preview renders (read-only, no textarea)')
+
+// ── image detection helper ──
+if (typeof exports._isImage !== 'function') throw new Error('_isImage hook missing')
+for (const [p, want] of [['a.png', true], ['b.JPEG', true], ['c.webp', true], ['d.ico', true], ['e.svg', false], ['f.txt', false], ['g.md', false]]) {
+  if (exports._isImage(p) !== want) throw new Error(`_isImage(${p}) = ${exports._isImage(p)}, want ${want}`)
+}
+console.log('✓ _isImage extension detection')
+
+// ── line-number builder ──
+if (typeof exports._lineNumbers !== 'function') throw new Error('_lineNumbers hook missing')
+if (exports._lineNumbers(3) !== '1\n2\n3') throw new Error('_lineNumbers(3) bad: ' + JSON.stringify(exports._lineNumbers(3)))
+if (exports._lineNumbers(0) !== '1') throw new Error('_lineNumbers(0) should clamp to 1')
+console.log('✓ _lineNumbers builder')
 
 // ── context menu rendering ──
 exports._testSelect('src/index.js', 'const a = 1\nconst b = 2\n', false)

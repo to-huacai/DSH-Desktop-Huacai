@@ -2,15 +2,19 @@
 //   node tools/test-editor-highlight.mjs
 import { createRequire } from 'node:module'
 import { readFileSync } from 'node:fs'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const require = createRequire('C:/Users/花菜菜/AppData/Local/DSH-Desktop-Huacai/app/node_modules/@deepseek-ai/dsh/package.json')
+const here = dirname(fileURLToPath(import.meta.url))
+const appModules = join(process.env.LOCALAPPDATA || '', 'DSH-Desktop-Huacai', 'app', 'node_modules')
+const require = createRequire(join(appModules, '@deepseek-ai', 'dsh', 'package.json'))
 const React = require('react')
 
 let captured = null
 const fakeWindow = {
   __ModuleLoader__: { load(entry) { captured = entry } },
 }
-const code = readFileSync('C:/Users/花菜菜/Desktop/to-deepseek/dsh-bundle/plugin/@local/dsh-editor/lib/client.js', 'utf8')
+const code = readFileSync(join(here, '..', 'dsh-bundle', 'plugin', '@local', 'dsh-editor', 'lib', 'client.js'), 'utf8')
 new Function('window', code + '; return null')(fakeWindow)
 if (!captured) throw new Error('loader not called')
 const exports = captured.factory(require)

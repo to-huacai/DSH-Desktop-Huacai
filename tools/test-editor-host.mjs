@@ -32,7 +32,11 @@ try {
   writeFileSync(join(root, 'src', 'components', 'App.jsx'), 'export default () => null\n', 'utf8')
   writeFileSync(join(root, 'docs', 'guide.md'), 'guide', 'utf8')
   writeFileSync(join(root, 'node_modules', 'somepkg', 'index.js'), 'skip me', 'utf8')
+  // 1.14: images now SHOW in the tree (they used to be skipped as binary)
   writeFileSync(join(root, 'secret.png'), 'not text', 'utf8')
+  writeFileSync(join(root, 'photo.JPG'), 'jpeg bytes', 'utf8')
+  // other binaries are still skipped
+  writeFileSync(join(root, 'app.exe'), 'binary', 'utf8')
   writeFileSync(join(root, 'notes.md'), 'notes', 'utf8')
 
   // capture the registered route handlers
@@ -81,8 +85,10 @@ try {
   console.log('✓ webServer routes: ' + routes.map((r) => r.path).join(', ') + ' + ws ' + upgrades[0].path)
 
   // helper to call a route handler with a fake req/res
+  // `raw` resolves { status, headers, body } without JSON parsing — used by
+  // the 1.14 /dsh-editor/image endpoint which replies with image bytes
   function makeCall(r) {
-    return function call(url, method, body) {
+    return function call(url, method, body, raw) {
       return new Promise((resolve, reject) => {
         const req = {
           url,
@@ -97,7 +103,12 @@ try {
         const chunks = []
         const res = {
           writeHead(status, headers) { res.status = status; res.headers = headers },
-          end(data) { chunks.push(String(data)); resolve({ status: res.status, json: JSON.parse(chunks.join('')) }) },
+          end(data) {
+            chunks.push(Buffer.isBuffer(data) ? data : Buffer.from(String(data)))
+            const buf = Buffer.concat(chunks)
+            if (raw) resolve({ status: res.status, headers: res.headers, body: buf })
+            else resolve({ status: res.status, json: JSON.parse(buf.toString('utf8')) })
+          },
         }
         r.handler(req, res).catch(reject)
       })
@@ -126,13 +137,52 @@ try {
   if (flat.some((p) => p.includes('node_modules') || p.includes('.git') || p.includes('_build'))) {
     throw new Error('skip dirs leaked into tree: ' + flat.join(','))
   }
-  if (flat.some((p) => p.includes('secret.png'))) throw new Error('binary file leaked: ' + flat.join(','))
+  // 1.14: images appear in the tree (lowercase + uppercase ext), other
+  // binaries (exe) are still skipped
+  if (!flat.includes('secret.png')) throw new Error('1.14: png missing from tree: ' + flat.join(','))
+  if (!flat.includes('photo.JPG')) throw new Error('1.14: JPG missing from tree: ' + flat.join(','))
+  if (flat.some((p) => p.includes('app.exe'))) throw new Error('exe still must be skipped: ' + flat.join(','))
   if (tree.json.truncated !== false) throw new Error('truncated flag bad')
 
   // read
   const file = await call('/dsh-editor/file?root=ws-1&path=src/index.js', 'GET')
   if (!file.json.ok || file.json.content !== 'export const x = 1\n') throw new Error('read bad: ' + JSON.stringify(file.json))
   console.log('✓ read file src/index.js')
+
+  // ── 1.14 image endpoint: raw bytes + correct content-type ────────────────
+  const img = await call('/dsh-editor/image?root=ws-1&path=secret.png', 'GET', null, true)
+  if (img.status !== 200) throw new Error('image status bad: ' + img.status)
+  if (!img.headers || img.headers['content-type'] !== 'image/png') {
+    throw new Error('image mime bad: ' + JSON.stringify(img.headers))
+  }
+  if (img.body.toString('utf8') !== 'not text') throw new Error('image body bad: ' + JSON.stringify(img.body.toString('utf8')))
+  console.log('✓ /dsh-editor/image → png bytes + image/png (' + img.body.length + ' bytes)')
+
+  // uppercase extension resolves to the same mime
+  const img2 = await call('/dsh-editor/image?root=ws-1&path=photo.JPG', 'GET', null, true)
+  if (img2.status !== 200 || img2.headers['content-type'] !== 'image/jpeg') {
+    throw new Error('JPG mime bad: ' + JSON.stringify(img2.headers))
+  }
+  console.log('✓ /dsh-editor/image → .JPG served as image/jpeg')
+
+  // non-image extension rejected (no generic binary download)
+  const imgBad = await call('/dsh-editor/image?root=ws-1&path=src/index.js', 'GET')
+  if (imgBad.json.ok !== false) throw new Error('non-image accepted: ' + JSON.stringify(imgBad.json))
+  const imgBad2 = await call('/dsh-editor/image?root=ws-1&path=app.exe', 'GET')
+  if (imgBad2.json.ok !== false) throw new Error('exe accepted by image endpoint: ' + JSON.stringify(imgBad2.json))
+  console.log('✓ /dsh-editor/image rejects non-image extensions')
+
+  // traversal / absolute paths rejected on the image endpoint
+  const imgEvil = await call('/dsh-editor/image?root=ws-1&path=..%2F..%2Fwindows%2Fsystem32%2Fdrivers%2Fetc%2Fhosts', 'GET')
+  if (imgEvil.json.ok !== false) throw new Error('image traversal NOT rejected: ' + JSON.stringify(imgEvil.json))
+  const imgEvil2 = await call('/dsh-editor/image?root=ws-1&path=%2Fetc%2Fpasswd.png', 'GET')
+  if (imgEvil2.json.ok !== false) throw new Error('image absolute path NOT rejected')
+  console.log('✓ /dsh-editor/image rejects traversal & absolute paths')
+
+  // missing file → 404
+  const imgMissing = await call('/dsh-editor/image?root=ws-1&path=nope.png', 'GET')
+  if (imgMissing.json.ok !== false) throw new Error('missing image not rejected: ' + JSON.stringify(imgMissing.json))
+  console.log('✓ /dsh-editor/image 404 on missing file')
 
   // path traversal must be rejected
   const evil = await call('/dsh-editor/file?root=ws-1&path=..%2F..%2Fwindows%2Fsystem32%2Fdrivers%2Fetc%2Fhosts', 'GET')
@@ -174,6 +224,18 @@ try {
     const dry2 = await callTerminal('/dsh-editor-terminal/open', 'POST', JSON.stringify({ dryRun: true }))
     if (!dry2.json.ok || dry2.json.cwd !== root) throw new Error('fallback cwd bad: ' + JSON.stringify(dry2.json))
     console.log('✓ /dsh-editor-terminal/open no-root fallback → ' + dry2.json.cwd)
+
+    // 1.13: a cwd under a registered workspace (exact or subdirectory) wins
+    spawnCalls = []
+    const sub = join(root, 'src')
+    const dry3 = await callTerminal('/dsh-editor-terminal/open', 'POST', JSON.stringify({ root: 'ws-1', cwd: sub, dryRun: true }))
+    if (!dry3.json.ok || dry3.json.cwd !== sub) throw new Error('cwd-under-workspace bad: ' + JSON.stringify(dry3.json))
+    console.log('✓ /dsh-editor-terminal/open cwd under workspace → ' + dry3.json.cwd)
+
+    // 1.13: a cwd OUTSIDE every workspace is rejected → falls back to the workspace root
+    const dry4 = await callTerminal('/dsh-editor-terminal/open', 'POST', JSON.stringify({ root: 'ws-1', cwd: 'C:\\Windows\\System32', dryRun: true }))
+    if (!dry4.json.ok || dry4.json.cwd !== root) throw new Error('cwd-outside must fall back: ' + JSON.stringify(dry4.json))
+    console.log('✓ /dsh-editor-terminal/open cwd outside workspace → falls back to ' + dry4.json.cwd)
 
     // real open: spawns ONE detached terminal at the workspace
     spawnCalls = []

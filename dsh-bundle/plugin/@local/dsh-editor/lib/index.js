@@ -5,12 +5,20 @@
  *   GET  /dsh-editor/roots        → { ok, workspaces: [{ id, title, path }] }
  *   GET  /dsh-editor/tree?root=   → { ok, root, title, tree, truncated }
  *   GET  /dsh-editor/file?root=&path= → { ok, path, content, size }
+ *   GET  /dsh-editor/image?root=&path= → raw image bytes (1.14; png/jpg/gif/
+ *         webp/bmp/ico/avif, 30 MB cap, proper content-type) so the browser
+ *         half can preview image files straight from an <img> tag
  *   POST /dsh-editor/file         → body { root, path, content } → { ok, path }
  *   POST /dsh-editor-terminal/open → body { root?, dryRun? } → { ok, shell, cwd }
- *   WS   /dsh-editor-terminal/ws  → Qoder-style EMBEDDED terminal: a ConPTY
- *         shell (node-pty, bundled inside the dsh app) relayed over JSON
- *         WebSocket frames ({t:'init'|'input'|'resize'|'restart'} ←→
- *         {t:'meta'|'hist'|'out'|'exit'|'err'}).
+ *   WS   /dsh-editor-terminal/ws  → Qoder-style EMBEDDED terminal: ConPTY
+ *         shells (node-pty, bundled inside the dsh app) relayed over JSON
+ *         WebSocket frames. 1.13 adds VS Code style tabs — every frame
+ *         carries a `sid` and the panel multiplexes one socket across many
+ *         sessions:
+ *           client → {t:'list'} {t:'init'|'new'|'attach', sid?, shell?, cols, rows, root?}
+ *                    {t:'input'|'resize'|'restart'|'close', sid?, ...}
+ *           server → {t:'list', sessions:[{sid,shell,cwd,exited}]}
+ *                    {t:'meta'|'hist'|'out'|'exit'|'err'|'removed', sid, ...}
  *
  * Security model:
  *   - The tree/file endpoints only ever resolve paths under a workspace taken
@@ -18,7 +26,8 @@
  *     absolute path.
  *   - Relative paths are sanitized (`..` and absolute segments rejected).
  *   - Text reads are capped (2 MB) so the browser never ingests a huge file;
- *     binary/known-heavy extensions are skipped in the tree walk.
+ *     binary/known-heavy extensions are skipped in the tree walk — EXCEPT
+ *     images (1.14), which are listed and served read-only via /image.
  *   - The terminal endpoints (1.12) run shells on the LOCAL machine — the
  *     browser is expected to be on the same host (the desktop launcher serves
  *     127.0.0.1). The working directory is resolved from the workspace
@@ -44,6 +53,7 @@ const MAX_TREE_DEPTH = 7
 const MAX_TREE_ENTRIES = 6000
 const MAX_FILE_BYTES = 2 * 1024 * 1024 // 2 MB text cap
 const MAX_POST_BYTES = 8 * 1024 * 1024 // POST body cap
+const MAX_IMAGE_BYTES = 30 * 1024 * 1024 // 30 MB image cap (1.14)
 
 /** Directories never shown in the file tree (build/vendor/ignored). */
 const SKIP_DIRS = new Set([
@@ -52,8 +62,30 @@ const SKIP_DIRS = new Set([
   'coverage', 'build-cache', '.dsh', '.DS_Store',
 ])
 
-/** File names never shown in the file tree. */
-const SKIP_FILE_RE = /\.(exe|dll|so|dylib|zip|7z|rar|tar|gz|png|jpe?g|gif|webp|bmp|ico|icns|pdf|woff2?|ttf|eot|otf|mp4|webm|mkv|avi|mov|mp3|wav|flac|ogg|bin|dat|class|jar|pyc|obj|o|a|lib|pdb)$/i
+/**
+ * Image files the browser can render natively (1.14). These are SHOWN in the
+ * file tree (previously skipped as binary) and served read-only through the
+ * /dsh-editor/image endpoint so the editor can preview them.
+ */
+const IMAGE_FILE_RE = /\.(png|jpe?g|gif|webp|bmp|ico|avif)$/i
+
+/** content-type per image extension (lowercase, no dot). */
+const IMAGE_MIME = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  bmp: 'image/bmp',
+  ico: 'image/x-icon',
+  avif: 'image/avif',
+}
+
+/**
+ * File names never shown in the file tree. Images are intentionally NOT in
+ * this list since 1.14 — they appear in the tree and open as a preview.
+ */
+const SKIP_FILE_RE = /\.(exe|dll|so|dylib|zip|7z|rar|tar|gz|icns|pdf|woff2?|ttf|eot|otf|mp4|webm|mkv|avi|mov|mp3|wav|flac|ogg|bin|dat|class|jar|pyc|obj|o|a|lib|pdb)$/i
 
 /** Concise error message helper. */
 function msg(error) {
@@ -208,8 +240,49 @@ function pickTerminal() {
   return { exe: 'cmd.exe', kind: 'cmd' }
 }
 
-/** Working directory for the terminal: requested workspace → DSH_HOME → home. */
-function terminalCwd(ctx, root) {
+/**
+ * Find the registered workspace whose root contains `target` (the path itself
+ * or any subdirectory of it). Case-insensitive, trailing-separator tolerant.
+ * Returns the workspace entity or null. This is the ONLY way a client-supplied
+ * path is ever accepted — it must live under a workspaceRegistry entry.
+ */
+function matchWorkspaceUnder(ctx, target) {
+  if (typeof target !== 'string' || target.length === 0) return null
+  const registry = ctx.get('workspaceRegistry')
+  if (!registry) return null
+  let all = []
+  try {
+    all = registry.list()
+  } catch (error) {
+    return null
+  }
+  if (!Array.isArray(all)) return null
+  const norm = (p) => normalize(String(p || '')).replace(/[\\/]+$/, '').toLowerCase()
+  const t = norm(target)
+  for (const w of all) {
+    if (!w || !w.path) continue
+    const p = norm(w.path)
+    if (t === p || t.startsWith(p + sep.toLowerCase())) return w
+  }
+  return null
+}
+
+/**
+ * Working directory for a terminal, in priority order:
+ *   1. the exact cwd the client resolved from the CURRENT session/project
+ *      (accepted only when it lives under a registered workspace — 1.13),
+ *   2. the requested workspace id → path,
+ *   3. DSH_HOME, 4. the user home.
+ */
+function terminalCwd(ctx, root, cwdPath) {
+  if (typeof cwdPath === 'string' && cwdPath) {
+    const ws = matchWorkspaceUnder(ctx, cwdPath)
+    if (ws) {
+      try {
+        if (existsSync(cwdPath)) return cwdPath
+      } catch (error) { /* stat failed, keep looking */ }
+    }
+  }
   const ws = workspaceById(ctx, root || undefined)
   if (ws && ws.path) {
     try {
@@ -251,7 +324,9 @@ function spawnTerminal(kind, exe, cwd) {
 }
 
 /**
- * POST /dsh-editor-terminal/open — body { root?, dryRun? }.
+ * POST /dsh-editor-terminal/open — body { root?, cwd?, dryRun? }.
+ * `cwd` (1.13) is the current session/project directory resolved by the client
+ * and is accepted only when it lives under a registered workspace.
  * NOTE: this lives on its OWN '/dsh-editor-terminal' prefix route: the app's
  * webServer matches prefix routes by path SEGMENT, so '/dsh-editor-terminal/*'
  * would never reach the '/dsh-editor' handler (and '/dsh-terminal/*' is owned
@@ -273,7 +348,8 @@ async function handleTerminalOpen(ctx, req, res) {
     return
   }
   const root = payload && typeof payload.root === 'string' ? payload.root : ''
-  const cwd = terminalCwd(ctx, root)
+  const cwdPath = payload && typeof payload.cwd === 'string' ? payload.cwd : ''
+  const cwd = terminalCwd(ctx, root, cwdPath)
   const term = pickTerminal()
   if (!term) {
     json(res, 500, { ok: false, error: '终端功能仅支持 Windows 桌面版' })
@@ -292,7 +368,7 @@ async function handleTerminalOpen(ctx, req, res) {
   }
 }
 
-// ── embedded terminal (1.12): Qoder-style in-page PTY ──────────────────────
+// ── embedded terminal (1.12/1.13): Qoder-style in-page PTY with tabs ───────
 // A ConPTY shell runs inside the dsh web process (node-pty — bundled with the
 // dsh app) and is relayed to the browser panel over a WebSocket. Zero new
 // dependencies: `node-pty` and `ws` both ship inside the embedded app. When
@@ -343,23 +419,17 @@ function loadWsServer() {
   }
 }
 
-const TERM_HISTORY_CAP = 600000 // bytes of raw output retained for replay
-const TERM_MAX_LINES = 4000
+const TERM_HISTORY_CAP = 600000 // bytes of raw output retained per session
+const TERM_MAX_SESSIONS = 8 // hard cap on concurrent shells (one per tab)
 
-/** One shared embedded-terminal session (shell keeps running while the panel
- *  is closed; reopening replays history). */
-const termState = {
-  pty: null,          // node-pty IPty or null
-  ptyGen: 0,          // increments per spawn; stale exit events are ignored
-  cwd: '',
-  shell: '',
-  cols: 100,
-  rows: 30,
-  exited: false,
-  history: '',
-  historyBytes: 0,
-  sockets: new Set(), // attached WebSockets (multiple tabs can attach)
-}
+/**
+ * Embedded-terminal sessions (1.13: VS Code style tabs). Each tab owns one
+ * ConPTY shell; shells keep running while the panel is closed, and reopening
+ * the panel replays each session's history. `sid` strings address sessions in
+ * every WS frame; the panel multiplexes one WebSocket across all tabs.
+ */
+const termSessions = new Map() // sid -> session
+let termNextSid = 1
 
 function clampInt(value, min, max, fallback) {
   const n = parseInt(value, 10)
@@ -367,87 +437,192 @@ function clampInt(value, min, max, fallback) {
   return Math.max(min, Math.min(max, n))
 }
 
-function termSendAll(message) {
+/** Send a JSON message to one WebSocket (best-effort). */
+function termSendTo(ws, message) {
+  try { ws.send(JSON.stringify(message)) } catch (error) { /* ignore */ }
+}
+
+/** Send a JSON message to every WebSocket attached to one session. */
+function termSessionSend(session, message) {
   const text = JSON.stringify(message)
-  for (const ws of Array.from(termState.sockets)) {
+  for (const ws of Array.from(session.sockets)) {
     try {
       if (ws.readyState === 1) ws.send(text)
     } catch (error) { /* socket gone */ }
   }
 }
 
-function termAppendHistory(data) {
-  termState.history += data
-  termState.historyBytes = termState.history.length
-  if (termState.historyBytes > TERM_HISTORY_CAP) {
-    termState.history = termState.history.slice(termState.historyBytes - TERM_HISTORY_CAP)
-    termState.historyBytes = termState.history.length
+/** Send a JSON message to every attached WebSocket across ALL sessions. */
+function termBroadcast(message) {
+  const text = JSON.stringify(message)
+  const seen = new Set()
+  for (const session of termSessions.values()) {
+    for (const ws of Array.from(session.sockets)) {
+      if (seen.has(ws)) continue
+      seen.add(ws)
+      try {
+        if (ws.readyState === 1) ws.send(text)
+      } catch (error) { /* socket gone */ }
+    }
   }
 }
 
-/** Kill the current session (if any); its exit event is ignored (stale gen). */
-function termKillCurrent() {
-  const pty = termState.pty
-  termState.pty = null
-  termState.exited = true
-  if (pty) {
-    try { pty.kill() } catch (error) { /* already gone */ }
+/** True when a session still exists (used to guard stale pty events). */
+function termAlive(session) {
+  return !!session && termSessions.get(session.sid) === session
+}
+
+/** Append raw output to a session's replay history (capped). */
+function termAppendHistory(session, data) {
+  session.history += data
+  session.historyBytes = session.history.length
+  if (session.historyBytes > TERM_HISTORY_CAP) {
+    session.history = session.history.slice(session.historyBytes - TERM_HISTORY_CAP)
+    session.historyBytes = session.history.length
   }
 }
 
-/** Spawn (or reuse) the embedded shell at `cwd`. */
-function termEnsureSession(cwd, shell, cols, rows) {
-  if (termState.pty && !termState.exited && termState.shell === shell) return termState
-  termKillCurrent()
+/**
+ * Spawn (or respawn) the shell of an existing session object. Compact prompts
+ * keep the cursor hugging the prompt text: PowerShell renders `PS <leaf>`
+ * (no trailing space — PSReadLine would otherwise emit `\x1b[1C` and leave a
+ * blank cell between the prompt and the cursor), cmd renders `C>` via the
+ * PROMPT env var (`/d` ignores any AutoRun that could override it).
+ */
+function termSpawnShell(session, shell, cols, rows) {
+  if (session.pty) {
+    try { session.pty.kill() } catch (error) { /* already gone */ }
+  }
   const ptyMod = loadNodePty()
   if (!ptyMod) throw new Error('终端组件不可用（node-pty 未随应用加载）')
-  // Compact prompt so the cursor stays near the left edge of the panel (the
-  // default PowerShell prompt prints the FULL path incl. the user name, which
-  // pushes the cursor far right). The full cwd stays visible in the panel
-  // header. -NoExit keeps the session interactive after defining `prompt`.
   const env = { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor' }
   let argv
   if (shell === 'cmd.exe') {
-    argv = ['cmd.exe']
+    argv = ['cmd.exe', '/d']
     env.PROMPT = '$N$G' // e.g. `C>` instead of `C:\full\path>`
   } else {
     argv = ['powershell.exe', '-NoLogo', '-NoExit', '-Command',
-      'function prompt {"PS " + (Split-Path -Leaf (Get-Location)) + "> "}']
+      'function prompt {"PS " + (Split-Path -Leaf (Get-Location)) + ">"}']
   }
+  session.shell = shell
+  session.cols = clampInt(cols, 20, 500, session.cols)
+  session.rows = clampInt(rows, 5, 200, session.rows)
+  session.history = ''
+  session.historyBytes = 0
+  const gen = ++session.ptyGen
   const pty = ptyMod.spawn(argv[0], argv.slice(1), {
     name: 'xterm-256color',
-    cols: clampInt(cols, 20, 500, 100),
-    rows: clampInt(rows, 5, 200, 30),
-    cwd,
+    cols: session.cols,
+    rows: session.rows,
+    cwd: session.cwd,
     env,
     useConpty: true,
   })
-  const gen = ++termState.ptyGen
-  termState.pty = pty
-  termState.cwd = cwd
-  termState.shell = shell
-  termState.exited = false
-  termState.cols = clampInt(cols, 20, 500, 100)
-  termState.rows = clampInt(rows, 5, 200, 30)
-  termState.history = ''
-  termState.historyBytes = 0
+  session.pty = pty
+  session.exited = false
   pty.onData((data) => {
-    if (termState.pty !== pty) return // stale session
-    termAppendHistory(data)
-    termSendAll({ t: 'out', d: data })
+    if (!termAlive(session) || session.pty !== pty) return // stale session
+    termAppendHistory(session, data)
+    termSessionSend(session, { t: 'out', sid: session.sid, d: data })
   })
   pty.onExit(({ exitCode }) => {
-    if (termState.pty !== pty) return // stale exit (replaced by a restart)
-    termState.pty = null
-    termState.exited = true
-    termSendAll({ t: 'exit', code: exitCode === undefined ? 0 : exitCode, gen })
+    if (!termAlive(session) || session.pty !== pty) return // stale exit (restarted)
+    session.pty = null
+    session.exited = true
+    termSessionSend(session, { t: 'exit', sid: session.sid, code: exitCode === undefined ? 0 : exitCode, gen })
   })
-  return termState
+  return session
+}
+
+/** Create a brand-new session (new tab) rooted at `cwd`. */
+function termCreateSession(cwd, shell, cols, rows) {
+  if (termSessions.size >= TERM_MAX_SESSIONS) {
+    // make room by dropping the oldest exited session
+    let oldest = null
+    for (const session of termSessions.values()) {
+      if (session.exited && (!oldest || session.createdAt < oldest.createdAt)) oldest = session
+    }
+    if (oldest) termDestroySession(oldest, true)
+    else throw new Error('终端会话数已达上限（' + TERM_MAX_SESSIONS + '），请先关闭部分终端')
+  }
+  const session = {
+    sid: String(termNextSid++),
+    pty: null,
+    ptyGen: 0,
+    cwd,
+    shell: shell === 'cmd.exe' ? 'cmd.exe' : 'powershell.exe',
+    cols: clampInt(cols, 20, 500, 100),
+    rows: clampInt(rows, 5, 200, 30),
+    exited: false,
+    history: '',
+    historyBytes: 0,
+    sockets: new Set(),
+    createdAt: Date.now(),
+  }
+  termSessions.set(session.sid, session)
+  try {
+    termSpawnShell(session, session.shell, session.cols, session.rows)
+  } catch (error) {
+    termSessions.delete(session.sid)
+    throw error
+  }
+  return session
+}
+
+/** Restart one existing session's shell in place (keeps its sid + cwd). */
+function termRestartSession(session, shell, cols, rows) {
+  if (!termAlive(session)) throw new Error('会话不存在')
+  const nextShell = shell === 'cmd.exe' ? 'cmd.exe' : (shell === 'powershell.exe' ? 'powershell.exe' : session.shell)
+  termSpawnShell(session, nextShell, cols, rows)
+  return session
+}
+
+/** Kill + forget a session. When `broadcast !== false`, tell every client. */
+function termDestroySession(session, broadcast) {
+  if (!termAlive(session)) return
+  termSessions.delete(session.sid)
+  if (session.pty) {
+    try { session.pty.kill() } catch (error) { /* already gone */ }
+  }
+  session.pty = null
+  session.exited = true
+  if (broadcast !== false) termBroadcast({ t: 'removed', sid: session.sid })
+  session.sockets.clear()
+}
+
+/** Attach a socket to a session (both directions). */
+function termAttachSocket(ws, session) {
+  if (!ws.__termSids) ws.__termSids = new Set()
+  if (!ws.__termSids.has(session.sid)) {
+    ws.__termSids.add(session.sid)
+    session.sockets.add(ws)
+  }
+}
+
+/** Detach a socket from every session it was attached to. */
+function termDetachSocket(ws) {
+  if (!ws.__termSids) return
+  for (const sid of ws.__termSids) {
+    const session = termSessions.get(sid)
+    if (session) session.sockets.delete(ws)
+  }
+  ws.__termSids.clear()
+}
+
+/** The session this socket implicitly addresses (first attached, else last). */
+function termSocketSession(ws) {
+  if (ws.__termSids && ws.__termSids.size > 0) {
+    const sid = Array.from(ws.__termSids)[0]
+    const session = termSessions.get(sid)
+    if (session) return session
+  }
+  let last = null
+  for (const session of termSessions.values()) last = session
+  return last
 }
 
 /** Handle one WebSocket client of the embedded terminal. */
 function handleTerminalWs(ws, req, ctx) {
-  let attached = false
   let url
   try {
     url = new URL(req.url || '/', 'http://dsh.local')
@@ -455,67 +630,148 @@ function handleTerminalWs(ws, req, ctx) {
     try { ws.close(1008, 'bad url') } catch (e) { /* ignore */ }
     return
   }
-  const cwd = terminalCwd(ctx, url.searchParams.get('root') || '')
+  const urlRoot = url.searchParams.get('root') || ''
+  const urlCwd = url.searchParams.get('cwd') || ''
+  const shellOf = (shell) => (shell === 'cmd' || shell === 'cmd.exe' ? 'cmd.exe' : 'powershell.exe')
+
+  const sendSessionState = (session) => {
+    termSendTo(ws, {
+      t: 'meta',
+      sid: session.sid,
+      cwd: session.cwd,
+      shell: session.shell,
+      pid: session.pty ? session.pty.pid : 0,
+    })
+    if (session.history) termSendTo(ws, { t: 'hist', sid: session.sid, d: session.history })
+    if (session.exited) termSendTo(ws, { t: 'exit', sid: session.sid, code: 0, gen: session.ptyGen })
+  }
+
   ws.on('message', (raw) => {
     let msg = null
     try { msg = JSON.parse(String(raw)) } catch (error) { return }
     if (!msg || typeof msg !== 'object') return
-    if (!attached) {
-      if (msg.t !== 'init') return
-      try {
-        const shell = msg.shell === 'cmd' ? 'cmd.exe' : 'powershell.exe'
-        const session = termEnsureSession(cwd, shell, msg.cols, msg.rows)
-        termState.sockets.add(ws)
-        attached = true
+    const sid = typeof msg.sid === 'string' && msg.sid ? msg.sid : null
+    const session = sid ? termSessions.get(sid) : null
+    switch (msg.t) {
+      // ── session list (panel reopened / tab bar rebuild) ────────────────
+      case 'list': {
         termSendTo(ws, {
-          t: 'meta',
-          cwd: session.cwd,
-          shell: session.shell,
-          pid: session.pty ? session.pty.pid : 0,
+          t: 'list',
+          sessions: Array.from(termSessions.values()).map((s) => ({
+            sid: s.sid, shell: s.shell, cwd: s.cwd, exited: s.exited,
+          })),
         })
-        if (termState.history) termSendTo(ws, { t: 'hist', d: termState.history })
-        if (termState.exited) termSendTo(ws, { t: 'exit', code: 0, gen: termState.ptyGen })
-      } catch (error) {
-        termSendTo(ws, { t: 'err', m: esc(msg(error)) })
-        try { ws.close(1011, 'terminal unavailable') } catch (e) { /* ignore */ }
+        return
       }
-      return
-    }
-    if (msg.t === 'input' && termState.pty && !termState.exited) {
-      try { termState.pty.write(String(msg.d || '')) } catch (error) { /* ignore */ }
-      return
-    }
-    if (msg.t === 'resize' && termState.pty && !termState.exited) {
-      try {
-        termState.pty.resize(
-          clampInt(msg.cols, 20, 500, termState.cols),
-          clampInt(msg.rows, 5, 200, termState.rows),
-        )
-      } catch (error) { /* ignore */ }
-      return
-    }
-    if (msg.t === 'restart') {
-      try {
-        const shell = msg.shell === 'cmd' ? 'cmd.exe' : (termState.shell || 'powershell.exe')
-        termEnsureSession(cwd, shell, msg.cols || termState.cols, msg.rows || termState.rows)
-        termSendTo(ws, {
-          t: 'meta',
-          cwd: termState.cwd,
-          shell: termState.shell,
-          pid: termState.pty ? termState.pty.pid : 0,
-        })
-      } catch (error) {
-        termSendTo(ws, { t: 'err', m: esc(msg(error)) })
+
+      // ── backward-compatible init: attach to / create the default session ─
+      case 'init': {
+        let target = null
+        for (const s of termSessions.values()) target = s
+        try {
+          if (!target || target.exited) {
+            target = termCreateSession(terminalCwd(ctx, urlRoot, urlCwd), shellOf(msg.shell), msg.cols, msg.rows)
+          }
+        } catch (error) {
+          termSendTo(ws, { t: 'err', m: esc(msg(error)) })
+          try { ws.close(1011, 'terminal unavailable') } catch (e) { /* ignore */ }
+          return
+        }
+        termAttachSocket(ws, target)
+        sendSessionState(target)
+        return
       }
-      return
+
+      // ── create a new session (new tab) ─────────────────────────────────
+      case 'new': {
+        let created
+        try {
+          const root = typeof msg.root === 'string' && msg.root ? msg.root : urlRoot
+          const cwdPath = typeof msg.cwd === 'string' && msg.cwd ? msg.cwd : urlCwd
+          created = termCreateSession(terminalCwd(ctx, root, cwdPath), shellOf(msg.shell), msg.cols, msg.rows)
+        } catch (error) {
+          termSendTo(ws, { t: 'err', m: esc(msg(error)) })
+          return
+        }
+        termAttachSocket(ws, created)
+        sendSessionState(created)
+        return
+      }
+
+      // ── attach to an existing session (switch tab / reopen) ────────────
+      case 'attach': {
+        if (!session) {
+          termSendTo(ws, { t: 'err', m: '会话不存在（可能已被关闭）' })
+          return
+        }
+        termAttachSocket(ws, session)
+        if (msg.cols && msg.rows && session.pty && !session.exited) {
+          try {
+            session.pty.resize(
+              clampInt(msg.cols, 20, 500, session.cols),
+              clampInt(msg.rows, 5, 200, session.rows),
+            )
+          } catch (error) { /* ignore */ }
+        }
+        sendSessionState(session)
+        return
+      }
+
+      // ── input / resize / restart / close (sid optional: socket session) ─
+      case 'input': {
+        const target = session || termSocketSession(ws)
+        if (target && target.pty && !target.exited) {
+          try { target.pty.write(String(msg.d || '')) } catch (error) { /* ignore */ }
+        }
+        return
+      }
+      case 'resize': {
+        const target = session || termSocketSession(ws)
+        if (target && target.pty && !target.exited) {
+          try {
+            target.pty.resize(
+              clampInt(msg.cols, 20, 500, target.cols),
+              clampInt(msg.rows, 5, 200, target.rows),
+            )
+          } catch (error) { /* ignore */ }
+        }
+        return
+      }
+      case 'restart': {
+        const target = session || termSocketSession(ws)
+        if (!target) {
+          termSendTo(ws, { t: 'err', m: '会话不存在' })
+          return
+        }
+        try {
+          termRestartSession(target, shellOf(msg.shell), msg.cols, msg.rows)
+          termSendTo(ws, {
+            t: 'meta',
+            sid: target.sid,
+            cwd: target.cwd,
+            shell: target.shell,
+            pid: target.pty ? target.pty.pid : 0,
+          })
+        } catch (error) {
+          termSendTo(ws, { t: 'err', m: esc(msg(error)) })
+        }
+        return
+      }
+      case 'close': {
+        const target = session || termSocketSession(ws)
+        if (target) {
+          if (ws.__termSids) ws.__termSids.delete(target.sid)
+          target.sockets.delete(ws)
+          termDestroySession(target, true)
+        }
+        return
+      }
+      default:
+        return
     }
   })
-  ws.on('close', () => { termState.sockets.delete(ws) })
-  ws.on('error', () => { termState.sockets.delete(ws) })
-}
-
-function termSendTo(ws, message) {
-  try { ws.send(JSON.stringify(message)) } catch (error) { /* ignore */ }
+  ws.on('close', () => termDetachSocket(ws))
+  ws.on('error', () => termDetachSocket(ws))
 }
 
 export function apply(ctx) {
@@ -580,6 +836,46 @@ export function apply(ctx) {
               }
               const content = await fsp.readFile(full, 'utf8')
               json(res, 200, { ok: true, path: rel, content, size: st.size })
+            } catch (error) {
+              json(res, 404, { ok: false, error: '读取失败: ' + esc(msg(error)) })
+            }
+            return
+          }
+
+          // ── read image (1.14): raw bytes for an <img> preview ───────────
+          if (path === '/dsh-editor/image' && req.method === 'GET') {
+            const ws = workspaceById(ctx, url.searchParams.get('root'))
+            const rel = url.searchParams.get('path') || ''
+            const full = ws ? safeResolve(ws.path, rel) : null
+            // extension whitelist: the endpoint never doubles as a generic
+            // binary downloader — only renderable image types are served
+            if (!full || !IMAGE_FILE_RE.test(rel)) {
+              json(res, 400, { ok: false, error: '无效图片路径' })
+              return
+            }
+            try {
+              const st = await fsp.stat(full)
+              if (!st.isFile()) {
+                json(res, 400, { ok: false, error: '不是文件' })
+                return
+              }
+              if (st.size > MAX_IMAGE_BYTES) {
+                json(res, 413, { ok: false, error: '图片过大（超过 30MB）' })
+                return
+              }
+              const extMatch = /\.([A-Za-z0-9]+)$/.exec(rel)
+              const mime = IMAGE_MIME[extMatch ? extMatch[1].toLowerCase() : ''] || 'application/octet-stream'
+              const data = await fsp.readFile(full)
+              try {
+                res.writeHead(200, {
+                  'content-type': mime,
+                  'content-length': data.length,
+                  'cache-control': 'no-store',
+                })
+                res.end(data)
+              } catch (error) {
+                // connection already gone
+              }
             } catch (error) {
               json(res, 404, { ok: false, error: '读取失败: ' + esc(msg(error)) })
             }
@@ -664,12 +960,18 @@ export function apply(ctx) {
         },
       }), 'dsh-editor: terminal websocket')
       webCtx.effect(() => () => {
-        // teardown: detach every client, kill the shell, drop the server
-        for (const ws of Array.from(termState.sockets)) {
-          try { ws.terminate() } catch (error) { /* ignore */ }
+        // teardown: detach every client, kill every shell, drop the server
+        for (const session of Array.from(termSessions.values())) {
+          for (const ws of Array.from(session.sockets)) {
+            try { ws.terminate() } catch (error) { /* ignore */ }
+          }
+          session.sockets.clear()
+          if (session.pty) {
+            try { session.pty.kill() } catch (error) { /* ignore */ }
+          }
+          session.pty = null
         }
-        termState.sockets.clear()
-        termKillCurrent()
+        termSessions.clear()
         try { wss.close() } catch (error) { /* ignore */ }
       }, 'dsh-editor: terminal teardown')
     } else {
