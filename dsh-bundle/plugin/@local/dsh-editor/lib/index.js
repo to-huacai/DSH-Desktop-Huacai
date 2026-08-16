@@ -401,8 +401,19 @@ function termEnsureSession(cwd, shell, cols, rows) {
   termKillCurrent()
   const ptyMod = loadNodePty()
   if (!ptyMod) throw new Error('终端组件不可用（node-pty 未随应用加载）')
-  const argv = shell === 'cmd.exe' ? ['cmd.exe'] : ['powershell.exe', '-NoLogo']
+  // Compact prompt so the cursor stays near the left edge of the panel (the
+  // default PowerShell prompt prints the FULL path incl. the user name, which
+  // pushes the cursor far right). The full cwd stays visible in the panel
+  // header. -NoExit keeps the session interactive after defining `prompt`.
   const env = { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor' }
+  let argv
+  if (shell === 'cmd.exe') {
+    argv = ['cmd.exe']
+    env.PROMPT = '$N$G' // e.g. `C>` instead of `C:\full\path>`
+  } else {
+    argv = ['powershell.exe', '-NoLogo', '-NoExit', '-Command',
+      'function prompt {"PS " + (Split-Path -Leaf (Get-Location)) + "> "}']
+  }
   const pty = ptyMod.spawn(argv[0], argv.slice(1), {
     name: 'xterm-256color',
     cols: clampInt(cols, 20, 500, 100),

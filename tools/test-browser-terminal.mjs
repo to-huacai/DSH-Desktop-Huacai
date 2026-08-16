@@ -163,7 +163,24 @@ try {
       wsState: d ? d.wsState() : null,
       wsUrl: d ? d.wsUrl() : null,
       emu: d ? d.emu() : null,
+      emuCursor: d ? d.emuCursor() : null,
       els: d ? d.els() : null,
+      cursorEl: (function () {
+        const el = document.querySelector('.dsh-editor-term-cursor')
+        if (!el) return null
+        return { left: el.style.left, top: el.style.top, w: el.style.width, h: el.style.height, vis: el.style.visibility }
+      })(),
+      lineInfo: (function () {
+        const lines = Array.from(document.querySelectorAll('.dsh-editor-term-line')).filter(function (el) { return el.style.visibility !== 'hidden' })
+        return lines.map(function (el) {
+          const text = (el.innerText || '').replace(/\s+$/, '')
+          return { top: el.style.top, textLen: text.length, text: text.slice(0, 60) }
+        })
+      })(),
+      panelWidth: (function () {
+        const p = document.querySelector('.dsh-editor-term-panel')
+        return p ? p.offsetWidth : 0
+      })(),
       footerButtons: Array.from(document.querySelectorAll('[data-slot="sidebar.footer.action"] button')).map(function (b) { return b.getAttribute('aria-label') || b.innerText }),
     }
   })()`)

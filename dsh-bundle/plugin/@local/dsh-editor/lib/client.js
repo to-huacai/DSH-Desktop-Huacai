@@ -2591,6 +2591,7 @@ window.__ModuleLoader__.load({
           wsState: () => (termNet.ws ? termNet.ws.readyState : -1),
           wsUrl: () => (termNet.ws ? termNet.ws.url : ''),
           emu: () => (termEmu ? { cols: termEmu.cols, rows: termEmu.rows, lines: termEmu.lines.length, offset: termEmu.offset } : null),
+          emuCursor: () => (termEmu ? { r: termEmu.cursor.r, c: termEmu.cursor.c, visible: termEmu.cursorVisible } : null),
           els: () => (termEmuEls ? { lines: termEmuEls.lineEls.length, cellW: termEmuEls.cellW, cellH: termEmuEls.cellH } : null),
           open: (rootId) => setTerminalOpen(true, rootId),
         }

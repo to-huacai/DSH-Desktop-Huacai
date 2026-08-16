@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-editor",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "description": "dsh web 编辑器模式:左侧文件树、中间可编辑文件、右侧对话带下拉会话切换,可与默认对话模式互相切换;1.12 起侧边栏新增终端按钮,对话/编辑器两种模式下均可打开 Qoder 式内置终端面板(ConPTY,可切 PowerShell/CMD),也可在系统终端中打开当前工作区目录。",
   "type": "module",
   "main": "lib/index.js",
