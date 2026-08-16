@@ -13,9 +13,9 @@
 #
 # Options:
 #   -SourceExe   previous release exe whose embedded plugin/script payload is
-#                reused as the build baseline (default DSH-Desktop-Huacai-1.10.exe;
+#                reused as the build baseline (default DSH-Desktop-Huacai-1.11.exe;
 #                dsh-bundle\ is overlaid on top, app.zip/runtime.zip are rebuilt)
-#   -OutExe      output file name (default DSH-Desktop-Huacai-1.11.exe)
+#   -OutExe      output file name (default DSH-Desktop-Huacai-1.12.exe)
 #   -NodeVersion embedded Node.js version (default v24.14.1; a local node of
 #                this version is reused when present, otherwise mirrors are tried)
 #   -FreshApp    reinstall dsh from npm instead of copying the local npx cache
@@ -30,8 +30,8 @@
 # $LASTEXITCODE instead.
 
 param(
-    [string]$SourceExe = 'DSH-Desktop-Huacai-1.10.exe',
-    [string]$OutExe = 'DSH-Desktop-Huacai-1.11.exe',
+    [string]$SourceExe = 'DSH-Desktop-Huacai-1.11.exe',
+    [string]$OutExe = 'DSH-Desktop-Huacai-1.12.exe',
     [string]$NodeVersion = 'v24.14.1',
     [switch]$FreshApp
 )

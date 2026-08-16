@@ -1,10 +1,13 @@
 // Standalone smoke test for the @local/dsh-editor HOST half logic.
 //   node tools/test-editor-host.mjs
-// Exercises walkDir / safeResolve / workspaceById against a temp tree
-// WITHOUT needing a running dsh (node:fs based logic only).
+// Exercises walkDir / safeResolve / workspaceById / terminal open against a
+// temp tree WITHOUT needing a running dsh (node:fs based logic only).
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+
+const require = createRequire(import.meta.url)
 
 // import the module; it also exports nothing but name/apply, so reach into
 // the internal functions via a small re-implementation check instead: we
@@ -63,32 +66,38 @@ try {
     },
   }
   injectCalls[0].cb(fakeWebCtx)
-  if (routes.length !== 1) throw new Error('expected one route, got ' + routes.length)
-  const route = routes[0]
-  if (route.kind !== 'prefix' || route.path !== '/dsh-editor') throw new Error('bad route: ' + JSON.stringify({ kind: route.kind, path: route.path }))
-  console.log('✓ webServer route registered: ' + route.path)
+  if (routes.length !== 2) throw new Error('expected two routes, got ' + routes.length)
+  const route = routes.find((r) => r.kind === 'prefix' && r.path === '/dsh-editor')
+  const terminalRoute = routes.find((r) => r.kind === 'prefix' && r.path === '/dsh-editor-terminal')
+  if (!route) throw new Error('missing /dsh-editor route: ' + JSON.stringify(routes.map((r) => r.path)))
+  if (!terminalRoute) throw new Error('missing /dsh-editor-terminal route: ' + JSON.stringify(routes.map((r) => r.path)))
+  console.log('✓ webServer routes registered: ' + routes.map((r) => r.path).join(', '))
 
-  // helper to call the handler with a fake req/res
-  function call(url, method, body) {
-    return new Promise((resolve, reject) => {
-      const req = {
-        url,
-        method,
-        on(ev, cb) {
-          if (ev === 'data') { if (body) cb(Buffer.from(body)) }
-          if (ev === 'end') cb()
-          if (ev === 'error') { /* noop */ }
-        },
-        destroy() {},
-      }
-      const chunks = []
-      const res = {
-        writeHead(status, headers) { res.status = status; res.headers = headers },
-        end(data) { chunks.push(String(data)); resolve({ status: res.status, json: JSON.parse(chunks.join('')) }) },
-      }
-      route.handler(req, res).catch(reject)
-    })
+  // helper to call a route handler with a fake req/res
+  function makeCall(r) {
+    return function call(url, method, body) {
+      return new Promise((resolve, reject) => {
+        const req = {
+          url,
+          method,
+          on(ev, cb) {
+            if (ev === 'data') { if (body) cb(Buffer.from(body)) }
+            if (ev === 'end') cb()
+            if (ev === 'error') { /* noop */ }
+          },
+          destroy() {},
+        }
+        const chunks = []
+        const res = {
+          writeHead(status, headers) { res.status = status; res.headers = headers },
+          end(data) { chunks.push(String(data)); resolve({ status: res.status, json: JSON.parse(chunks.join('')) }) },
+        }
+        r.handler(req, res).catch(reject)
+      })
+    }
   }
+  const call = makeCall(route)
+  const callTerminal = makeCall(terminalRoute)
 
   // roots
   const roots = await call('/dsh-editor/roots', 'GET')
@@ -136,6 +145,66 @@ try {
   const w2 = await call('/dsh-editor/file', 'POST', JSON.stringify({ root: 'ws-1', path: '../escape.txt', content: 'x' }))
   if (w2.json.ok !== false) throw new Error('write traversal NOT rejected')
   console.log('✓ write traversal rejected')
+
+  // ── terminal endpoint (1.12): POST /dsh-editor-terminal/open ───────────────────
+  // stub child_process.spawn (the ESM default import shares the CJS exports
+  // object, so patching the property is visible to the plugin code)
+  const cpMod = require('node:child_process')
+  const originalSpawn = cpMod.spawn
+  let spawnCalls = []
+  cpMod.spawn = (exe, args, opts) => { spawnCalls.push({ exe, args, opts }); return { unref() {} } }
+  try {
+    // dry run: resolves shell + cwd, must NOT spawn a window
+    spawnCalls = []
+    const dry = await callTerminal('/dsh-editor-terminal/open', 'POST', JSON.stringify({ root: 'ws-1', dryRun: true }))
+    if (!dry.json.ok || dry.json.dryRun !== true) throw new Error('dryRun bad: ' + JSON.stringify(dry.json))
+    if (dry.json.cwd !== root) throw new Error('dryRun cwd bad: ' + dry.json.cwd)
+    if (!['wt', 'cmd'].includes(dry.json.shell)) throw new Error('dryRun shell bad: ' + dry.json.shell)
+    if (spawnCalls.length !== 0) throw new Error('dryRun must not spawn')
+    console.log('✓ /dsh-editor-terminal/open dryRun → shell=' + dry.json.shell + ' cwd=' + dry.json.cwd)
+
+    // no root → falls back to the first registry workspace
+    const dry2 = await callTerminal('/dsh-editor-terminal/open', 'POST', JSON.stringify({ dryRun: true }))
+    if (!dry2.json.ok || dry2.json.cwd !== root) throw new Error('fallback cwd bad: ' + JSON.stringify(dry2.json))
+    console.log('✓ /dsh-editor-terminal/open no-root fallback → ' + dry2.json.cwd)
+
+    // real open: spawns ONE detached terminal at the workspace
+    spawnCalls = []
+    const open = await callTerminal('/dsh-editor-terminal/open', 'POST', JSON.stringify({ root: 'ws-1' }))
+    if (!open.json.ok || !['wt', 'cmd'].includes(open.json.shell)) throw new Error('open bad: ' + JSON.stringify(open.json))
+    if (spawnCalls.length !== 1) throw new Error('expected one spawn, got ' + spawnCalls.length)
+    const sp = spawnCalls[0]
+    if (sp.opts.cwd !== root || sp.opts.detached !== true || sp.opts.stdio !== 'ignore') {
+      throw new Error('spawn options bad: ' + JSON.stringify(sp.opts))
+    }
+    if (open.json.shell === 'cmd') {
+      // cmd must go through `start` so the interactive console persists;
+      // the outer cmd /c itself is hidden
+      if (sp.opts.windowsHide !== true) throw new Error('cmd spawn must be hidden: ' + JSON.stringify(sp.opts))
+      if (sp.args.join(' ') !== '/c start DSH Terminal cmd /k') {
+        throw new Error('cmd args bad: ' + JSON.stringify(sp.args))
+      }
+    } else {
+      if (sp.opts.windowsHide !== false) throw new Error('wt spawn must be visible: ' + JSON.stringify(sp.opts))
+      if (sp.args[0] !== '-d' || sp.args[1] !== root) throw new Error('wt args bad: ' + JSON.stringify(sp.args))
+    }
+    console.log('✓ /dsh-editor-terminal/open spawn → ' + sp.exe + ' ' + JSON.stringify(sp.args))
+
+    // spawn failure surfaces a readable 500
+    cpMod.spawn = () => { throw new Error('boom') }
+    const fail = await callTerminal('/dsh-editor-terminal/open', 'POST', JSON.stringify({ root: 'ws-1' }))
+    if (fail.json.ok !== false || !String(fail.json.error).includes('打开终端失败')) {
+      throw new Error('failure path bad: ' + JSON.stringify(fail.json))
+    }
+    console.log('✓ /dsh-editor-terminal/open failure path → ' + fail.json.error)
+
+    // invalid JSON body rejected
+    const bad = await callTerminal('/dsh-editor-terminal/open', 'POST', 'not json')
+    if (bad.json.ok !== false) throw new Error('invalid JSON accepted')
+    console.log('✓ /dsh-editor-terminal/open rejects invalid JSON')
+  } finally {
+    cpMod.spawn = originalSpawn
+  }
 
   console.log('\nALL HOST LOGIC TESTS PASSED')
 } finally {

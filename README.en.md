@@ -13,6 +13,7 @@ DSH-Desktop-Huacai is a self-contained desktop client built on DeepSeek Harness.
 - **Launcher management**: automatically detects and starts the DeepSeek service; extraction progress bar + loading overlay, no blank waiting
 - **Custom skins**: one-click light theme with 5 preset accent colors (pink/blue/green/purple/orange) + custom color picker; optional photo background (built-in default or upload ≤15MB), translucent panels, frosted-glass AI reply cards; settings auto-saved
 - **Archive management**: the "Archive" panel in the sidebar for viewing/restoring/permanently deleting archived sessions, synced live with dsh's native operations
+- **Terminal button**: a sidebar-foot [Terminal] button opens a system terminal (Windows Terminal, or cmd as fallback) rooted at the current workspace — available in both conversation mode and editor mode
 - **Plugin system**: built-in editor plugin (dsh-editor), update-check plugin (dsh-updater) and other @local plugins
 - **In-app updates**: one-click check and update of the dsh core from Settings → General (npm official registry, auto-switches mirror on failure), with automatic rollback
 - **System tray**: closing the window minimizes to tray and the service keeps running; right-click the tray icon to "Open UI" or "Stop & Exit"
@@ -41,12 +42,12 @@ DSH-Desktop-Huacai is a self-contained desktop client built on DeepSeek Harness.
 │   ├── apply-update.mjs         # Update apply script
 │   ├── install-skin-plugin.mjs  # Skin installation script
 │   └── plugin/@local/
-│       ├── dsh-editor/          # Editor plugin
+│       ├── dsh-editor/          # Editor + terminal plugin
 │       └── dsh-updater/         # Update-check plugin
 ├── build.ps1                    # Build script (produces the exe)
 ├── run-test.ps1                 # Test script
 ├── merge-exe-parts.bat          # Recombine split parts back into the release exe
-├── DSH-Desktop-Huacai-1.11.exe.part1/.part2  # Release exe split parts (each <100MB)
+├── DSH-Desktop-Huacai-1.12.exe.part1/.part2  # Release exe split parts (each <100MB)
 ├── 使用说明.md / 更新文档.md / 新增功能说明.md  # Chinese docs (usage / updates / new features)
 └── LICENSE
 ```
@@ -61,10 +62,10 @@ Gitee free repositories cap single files at 100MB, so the ~123MB release exe is 
 git clone https://gitee.com/huacaicaicai/dsh-desktop-huacai.git
 cd dsh-desktop-huacai
 # Recombine the parts (or simply double-click merge-exe-parts.bat):
-copy /b "DSH-Desktop-Huacai-1.11.exe.part1" + "DSH-Desktop-Huacai-1.11.exe.part2" "DSH-Desktop-Huacai-1.11.exe"
+copy /b "DSH-Desktop-Huacai-1.12.exe.part1" + "DSH-Desktop-Huacai-1.12.exe.part2" "DSH-Desktop-Huacai-1.12.exe"
 ```
 
-Then double-click `DSH-Desktop-Huacai-1.11.exe` to run (Windows 10/11, nothing to install).
+Then double-click `DSH-Desktop-Huacai-1.12.exe` to run (Windows 10/11, nothing to install).
 > Make sure the exe is not running before recombining; the parts have been verified (combined hash matches the original file).
 
 ## Building from Source
@@ -72,7 +73,7 @@ Then double-click `DSH-Desktop-Huacai-1.11.exe` to run (Windows 10/11, nothing t
 Build machine requirements: Windows, .NET Framework 4.x (with the built-in csc), Node.js.
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File build.ps1 -OutExe DSH-Desktop-Huacai-1.11.exe
+powershell -ExecutionPolicy Bypass -File build.ps1 -OutExe DSH-Desktop-Huacai-1.12.exe
 ```
 
 The script extracts the embedded plugins from the previous exe (self-bootstrapping build) → overlays `dsh-bundle\` → packages the embedded Node runtime → copies the latest dsh from the npx cache (or `-FreshApp` to install from npm) → compiles the launcher → assembles the new exe.
@@ -92,7 +93,7 @@ Place a `launcher.json` next to the exe to override defaults (optional):
 
 ## Built-in Features (@local Plugins)
 
-The four built-in features (skin, archive, update, editor mode) are all @local plugins embedded in the exe. They are installed into the profile automatically on first launch — out of the box. Your data (sessions/workspaces/keys/settings) is unaffected.
+The five built-in features (skin, archive, update, editor mode, terminal) are all @local plugins embedded in the exe. They are installed into the profile automatically on first launch — out of the box. Your data (sessions/workspaces/keys/settings) is unaffected.
 
 ### 🎨 Skin (Light Theme)
 
@@ -119,6 +120,14 @@ The four built-in features (skin, archive, update, editor mode) are all @local p
 - Syntax highlighting for 30+ languages (JS/TS/Python/Rust/Go/Java/C/C++/C#/SQL/HTML/CSS/Shell/YAML, etc.); auto-disabled for very large files to keep input smooth
 - Reads/writes files only inside the current workspace directory, with path traversal protection
 
+### 🖥️ Terminal (new in 1.12)
+
+**Entry: the "Terminal" button at the bottom of the sidebar** — visible in both conversation mode and editor mode
+
+- One click opens a system terminal window (Windows Terminal when installed, cmd otherwise) rooted at the current workspace directory
+- Editor mode: opens at the file-tree project root; conversation mode: at the current session's workspace (falls back to the DSH home / user home)
+- The terminal is an independent window that keeps running after the DSH UI/service exits; failures surface as a red toast in the UI
+
 ### 🔄 In-App Update (dsh-updater)
 
 **Entry: Settings → General → "DeepSeek Harness Update"**
@@ -141,3 +150,4 @@ This project follows an open source license; see the LICENSE file in the reposit
 - Project: https://gitee.com/huacaicaicai/dsh-desktop-huacai
 - DeepSeek Official Website: https://deepseek.com
 - Issue Feedback: https://gitee.com/huacaicaicai/dsh-desktop-huacai/issues
+

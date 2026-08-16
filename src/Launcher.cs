@@ -47,7 +47,7 @@ internal static class Program
     private const string AUMID = "DeepSeekHarness.DSH-Desktop-Huacai";
     // Bump EMBEDDED_VERSION whenever the embedded payload layout or the
     // launcher's handling of it changes (re-extract on existing machines).
-    private const string EMBEDDED_VERSION = "23";
+    private const string EMBEDDED_VERSION = "24";
     private const string RUNTIME_SUBDIR = "DSH-Desktop-Huacai";
     private const string PAYLOAD_MAGIC = "DSHPAYLD";
     private const int DEFAULT_PORT = 3080;

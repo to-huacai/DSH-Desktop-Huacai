@@ -13,6 +13,7 @@ DSH-Desktop-Huacai 是一个基于 DeepSeek Harness 的自包含桌面客户端�
 - **启动器管理**：自动检测与启动 DeepSeek 服务端；解压进度条 + 加载遮罩，不黑屏等待
 - **自定义皮肤**：一键切换浅色主题，5 套预设主色调（粉/蓝/绿/紫/橙）+ 自定义取色器；可选照片背景（内置默认图或上传 ≤15MB）、半透明面板、AI 回复毛玻璃卡片；设置自动保存
 - **归档管理**：侧边栏「归档」集中查看/恢复/彻底删除归档会话，与 dsh 原生操作实时联动
+- **终端按钮**：侧边栏底部「终端」一键打开系统终端（Windows Terminal/cmd），自动定位当前工作区目录，对话模式与编辑器模式均可用
 - **插件系统**：内置编辑器插件（dsh-editor）、更新检查插件（dsh-updater）等 @local 插件
 - **应用内更新**：设置 → 通用设置中一键检查并更新 dsh 核心（npm 官方源，失败自动切换镜像），失败自动回滚
 - **托盘驻留**：关闭窗口最小化到托盘，服务不中断；右键托盘可"打开界面"或"停止并退出"
@@ -46,7 +47,7 @@ DSH-Desktop-Huacai 是一个基于 DeepSeek Harness 的自包含桌面客户端�
 ├── build.ps1                    # 构建脚本（产出 exe）
 ├── run-test.ps1                 # 测试脚本
 ├── merge-exe-parts.bat          # 合并分卷，还原发布版 exe
-├── DSH-Desktop-Huacai-1.11.exe.part1/.part2  # 发布版分卷（各 <100MB）
+├── DSH-Desktop-Huacai-1.12.exe.part1/.part2  # 发布版分卷（各 <100MB）
 ├── 使用说明.md / 更新文档.md / 新增功能说明.md
 └── LICENSE
 ```
@@ -61,10 +62,10 @@ Gitee 免费仓库单文件上限 100MB，发布版 exe（约 123MB）拆为两�
 git clone https://gitee.com/huacaicaicai/dsh-desktop-huacai.git
 cd dsh-desktop-huacai
 # 合并分卷（也可直接双击 merge-exe-parts.bat）：
-copy /b "DSH-Desktop-Huacai-1.11.exe.part1" + "DSH-Desktop-Huacai-1.11.exe.part2" "DSH-Desktop-Huacai-1.11.exe"
+copy /b "DSH-Desktop-Huacai-1.12.exe.part1" + "DSH-Desktop-Huacai-1.12.exe.part2" "DSH-Desktop-Huacai-1.12.exe"
 ```
 
-合并后双击 `DSH-Desktop-Huacai-1.11.exe` 即可运行（Windows 10/11，无需安装任何东西）。
+合并后双击 `DSH-Desktop-Huacai-1.12.exe` 即可运行（Windows 10/11，无需安装任何东西）。
 > 合并前请确保该 exe 未在运行；分卷完整性已验证（合并哈希与原文件一致）。
 
 ## 从源码构建
@@ -72,7 +73,7 @@ copy /b "DSH-Desktop-Huacai-1.11.exe.part1" + "DSH-Desktop-Huacai-1.11.exe.part2
 构建机需要：Windows、.NET Framework 4.x（含系统 csc）、Node.js。
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File build.ps1 -OutExe DSH-Desktop-Huacai-1.11.exe
+powershell -ExecutionPolicy Bypass -File build.ps1 -OutExe DSH-Desktop-Huacai-1.12.exe
 ```
 
 脚本流程：提取上一版 exe 的内嵌插件（自举构建）→ 叠加 `dsh-bundle\` → 打包内置 Node 运行时 → 从 npx 缓存复制最新 dsh（或 `-FreshApp` 走 npm）→ 编译启动器 → 组装新 exe。
@@ -92,7 +93,7 @@ powershell -ExecutionPolicy Bypass -File build.ps1 -OutExe DSH-Desktop-Huacai-1.
 
 ## 内置功能（@local 插件）
 
-四大内置功能（皮肤、归档、更新、编辑器模式）均为 exe 内嵌的 @local 插件，首次启动自动装入 profile，开箱即用；数据（会话/工作区/密钥/设置）不受影响。
+五大内置功能（皮肤、归档、更新、编辑器模式、终端）均为 exe 内嵌的 @local 插件，首次启动自动装入 profile，开箱即用；数据（会话/工作区/密钥/设置）不受影响。
 
 ### 🎨 皮肤（浅色主题）
 
@@ -118,6 +119,14 @@ powershell -ExecutionPolicy Bypass -File build.ps1 -OutExe DSH-Desktop-Huacai-1.
 - 文件树浏览/切换工作区；直接编辑文件，`Ctrl+S` 写回磁盘；未保存标记与切换确认
 - 语法高亮支持 30+ 语言（JS/TS/Python/Rust/Go/Java/C/C++/C#/SQL/HTML/CSS/Shell/YAML 等），超大文件自动关闭高亮保证流畅
 - 只读写当前工作区目录内的文件，路径越界防护
+
+### 🖥️ 终端（1.12 新增）
+
+**入口：侧边栏底部「终端」**，对话模式与编辑器模式下均可见
+
+- 一键打开系统终端（Windows Terminal 优先，否则 cmd），自动进入当前工作区目录
+- 编辑器模式定位到文件树项目根目录；对话模式定位到当前会话所属工作区
+- 终端为独立窗口，关闭 dsh 后仍可用；后端从工作区注册表解析目录，不接受任意路径
 
 ### 🔄 应用内更新（dsh-updater）
 

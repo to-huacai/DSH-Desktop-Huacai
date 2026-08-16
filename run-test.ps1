@@ -1,4 +1,4 @@
-# run-test.ps1 - isolated functional test for DSH-Desktop-Huacai-1.11.exe
+# run-test.ps1 - isolated functional test for DSH-Desktop-Huacai-1.12.exe
 # NOTE: keep this file ASCII-only (PS 5.1 parses BOM-less .ps1 as ANSI).
 # 1) copies the exe to a scratch dir (no side folders => single-file path)
 # 2) writes a launcher.json: port 3099, isolated DSH_HOME, no browser,
@@ -15,7 +15,7 @@ $root = $PSScriptRoot
 $test = Join-Path $root '_test'
 $home = Join-Path $test 'home'
 $log  = Join-Path $root 'test-result.txt'
-$exe = Join-Path $test 'DSH-Desktop-Huacai-1.11.exe'
+$exe = Join-Path $test 'DSH-Desktop-Huacai-1.12.exe'
 
 function Write-Result([string]$line) {
     $line | Tee-Object -FilePath $log -Append
@@ -30,7 +30,7 @@ Get-Process | Where-Object { $_.ProcessName -like 'DSH-Desktop-Huacai*' -or $_.P
 Start-Sleep -Seconds 1
 if (Test-Path $test) { Remove-Item $test -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $test | Out-Null
-Copy-Item (Join-Path $root 'DSH-Desktop-Huacai-1.11.exe') $exe -Force
+Copy-Item (Join-Path $root 'DSH-Desktop-Huacai-1.12.exe') $exe -Force
 # keep dshHome on a pure-ASCII path so no encoding issue can corrupt it
 $testHome = 'C:\Users\Public\dsh-test-home'
 if (Test-Path $testHome) { Remove-Item $testHome -Recurse -Force }
@@ -77,11 +77,22 @@ Write-Result ("profile skin pkg: {0}" -f (Test-Path (Join-Path $web 'node_module
 Write-Result ("profile archive pkg: {0}" -f (Test-Path (Join-Path $web 'node_modules\@local\dsh-archive\package.json')))
 Write-Result ("profile updater pkg: {0}" -f (Test-Path (Join-Path $web 'node_modules\@local\dsh-updater\package.json')))
 Write-Result ("profile editor pkg: {0}" -f (Test-Path (Join-Path $web 'node_modules\@local\dsh-editor\package.json')))
+$editorVer = (Get-Content (Join-Path $web 'node_modules\@local\dsh-editor\package.json') -Raw | ConvertFrom-Json).version
+Write-Result ("profile editor version: {0}" -f $editorVer)
 Write-Result ("profile editor client: {0}" -f (Test-Path (Join-Path $web 'node_modules\@local\dsh-editor\lib\client.js')))
 Write-Result ("profile skin ecb2.png: {0}" -f (Test-Path (Join-Path $web 'node_modules\@local\dsh-skin\ecb2.png')))
 Write-Result ("apply-update.mjs: {0}" -f (Test-Path (Join-Path $env:LOCALAPPDATA 'DSH-Desktop-Huacai\apply-update.mjs')))
 $serverLog = "$env:LOCALAPPDATA\DSH-Desktop-Huacai\logs\launcher.log"
 Write-Result ("launcher.log exists: {0}" -f (Test-Path $serverLog))
+
+# 5.5 terminal endpoint: dry run resolves cwd/shell without opening a window
+Start-Sleep -Seconds 2
+try {
+    $resp = Invoke-RestMethod -Uri 'http://127.0.0.1:3099/dsh-editor-terminal/open' -Method Post -ContentType 'application/json' -Body '{"dryRun":true}' -TimeoutSec 15
+    Write-Result ("terminal dryRun ok: {0}" -f ($resp | ConvertTo-Json -Compress))
+} catch {
+    Write-Result ("terminal dryRun FAILED: {0}" -f $_.Exception.Message)
+}
 
 # 6. wait for auto-exit (exitAfterMs=45000 after ready)
 $exited = $false

@@ -99,6 +99,12 @@ window.__ModuleLoader__.load({
         React.createElement('path', { d: 'M6.5 6l7 7M6.5 10l7-7', stroke: 'currentColor', strokeWidth: 1.3, strokeLinecap: 'round' }),
       )
     }
+    function FallbackTerminalIcon({ size }) {
+      return React.createElement('svg', { width: size, height: size, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': true },
+        React.createElement('rect', { x: 1.5, y: 2.5, width: 13, height: 11, rx: 2, stroke: 'currentColor', strokeWidth: 1.4 }),
+        React.createElement('path', { d: 'M4.5 6l2 2-2 2M7.5 10.5h4', stroke: 'currentColor', strokeWidth: 1.4, strokeLinecap: 'round', strokeLinejoin: 'round' }),
+      )
+    }
 
     /** Browser services this client plugin needs. */
     const inject = ['slots', 'sessions', 'workspaces']
@@ -132,6 +138,8 @@ window.__ModuleLoader__.load({
       chatW: 420,
       sessionMenuOpen: false, // session dropdown (chat-column top bar)
       sessionQuery: '',
+      toast: null, // { text, kind: 'ok'|'err' } — transient top-center toast (1.12)
+      terminalBusy: false, // terminal button in-flight (1.12)
     }
 
       /** Runtime session opener, wired in apply() once the sessions service is available. */
@@ -360,6 +368,14 @@ window.__ModuleLoader__.load({
       '.dsh-editor-tree-children{margin-left:15px;border-left:1px solid var(--dsw-alias-border-l1,rgba(0,0,0,.09));padding-left:5px;}',
       '.dsh-editor-tree-foot{flex:none;padding:7px 12px;font-size:11px;color:var(--dsw-alias-label-tertiary,#8b949e);',
       'border-top:1px solid var(--dsw-alias-border-l1,rgba(0,0,0,.06));overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+      // terminal button (1.12) + transient toast (rendered in shell.overlay)
+      '.dsh-editor-toast{position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:120;display:flex;align-items:center;gap:8px;',
+      'max-width:min(72vw,640px);padding:8px 16px;border-radius:10px;box-sizing:border-box;font-size:12.5px;line-height:1.5;',
+      'box-shadow:0 6px 24px rgba(0,0,0,.18);pointer-events:none;word-break:break-all;font-family:inherit;}',
+      '.dsh-editor-toast.ok{background:var(--dsw-alias-bg-layer-2,#ffffff);border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.14));',
+      'color:var(--dsw-alias-label-primary,#1f2328);}',
+      '.dsh-editor-toast.err{background:#fff1f0;border:1px solid rgba(207,34,46,.35);color:#cf222e;}',
+      'body[data-ds-dark-theme] .dsh-editor-toast.err{background:rgba(207,34,46,.18);border-color:rgba(207,34,46,.5);color:#ffb3b0;}',
     ].join('')
 
     // ── API helpers ────────────────────────────────────────────────────────
@@ -738,6 +754,108 @@ window.__ModuleLoader__.load({
           React.createElement(ModeIcon, { size: 16 }),
         ),
         !rail ? React.createElement('span', null, label) : null,
+      )
+    }
+
+    // ── terminal (1.12) ────────────────────────────────────────────────────
+
+    /** Transient top-center toast (rendered via a dedicated shell.overlay cell). */
+    let toastTimer = null
+    function showToast(text, kind) {
+      setState({ toast: { text: String(text || ''), kind: kind === 'err' ? 'err' : 'ok' } })
+      if (toastTimer !== null) { clearTimeout(toastTimer); toastTimer = null }
+      toastTimer = setTimeout(() => {
+        toastTimer = null
+        setState({ toast: null })
+      }, 3200)
+    }
+
+    /** Workspace id for the terminal: editor-mode tree root first, then the
+     *  current conversation session's workspace (both modes), else '' (the
+     *  node half falls back to the first registry workspace). Called during
+     *  render only — it reads the useSessions hook. */
+    function terminalRootId(props) {
+      if (state.rootId) return state.rootId
+      try {
+        const useSessions = props && typeof props.useSessions === 'function' ? props.useSessions : null
+        if (useSessions) {
+          const list = useSessions((s) => s)
+          const current = list && list.current
+          const byId = list && list.byId
+          const session = current !== undefined && current !== null && byId ? (byId[current] || undefined) : undefined
+          if (session && session.workspaceId) return session.workspaceId
+        }
+      } catch (e) { /* no sessions data available */ }
+      return ''
+    }
+
+    /** Open a native terminal rooted at the current workspace. */
+    async function openTerminal(rootId) {
+      if (state.terminalBusy) return
+      setState({ terminalBusy: true })
+      try {
+        const res = await fetch('/dsh-editor-terminal/open', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ root: rootId || '' }),
+        })
+        let data = null
+        try { data = await res.json() } catch (e) { /* non-JSON body */ }
+        if (!data || data.ok !== true) {
+          throw new Error((data && data.error) ? data.error : ('请求失败 (HTTP ' + res.status + ')'))
+        }
+        showToast('已打开终端: ' + (data.cwd || ''), 'ok')
+      } catch (e) {
+        showToast('打开终端失败: ' + (e && e.message ? e.message : String(e)), 'err')
+      } finally {
+        setState({ terminalBusy: false })
+      }
+    }
+
+    /** Sidebar-foot terminal button — visible in BOTH conversation mode and
+     *  editor mode (the footer action seat survives the mode switch). */
+    function TerminalButton(props) {
+      useForce()
+      const wide = !props || props.wide !== false
+      const rail = !wide
+      // resolve the current session's workspace during render (hook rules)
+      const rootRef = React.useRef('')
+      rootRef.current = terminalRootId(props)
+      const base = {
+        boxSizing: 'border-box', cursor: 'pointer',
+        color: 'var(--dsw-alias-label-primary, #1f2328)',
+        background: 'transparent', border: 'none', fontFamily: 'inherit',
+        display: 'flex', alignItems: 'center', flex: 'none',
+        transition: 'background 0.15s ease',
+      }
+      const buttonStyle = rail
+        ? { ...base, width: '36px', height: '36px', justifyContent: 'center', gap: '0', borderRadius: '50%', margin: '8px 0 10px', padding: '0', opacity: state.terminalBusy ? 0.55 : 1 }
+        : { ...base, width: 'calc(100% + 8px)', height: '34px', borderRadius: '12px', gap: '8px', margin: '4px -4px', padding: '6px 2px 6px 10px', fontSize: '14px', lineHeight: '22px', overflow: 'hidden', opacity: state.terminalBusy ? 0.55 : 1 }
+      const onEnter = (e) => { e.currentTarget.style.background = 'var(--dsw-alias-interactive-bg-hover-solid, rgba(0,0,0,.05))' }
+      const onLeave = (e) => { e.currentTarget.style.background = 'transparent' }
+      return React.createElement('button', {
+        type: 'button',
+        onClick: () => openTerminal(rootRef.current),
+        title: '打开终端（当前工作区目录）',
+        'aria-label': '打开终端',
+        disabled: state.terminalBusy,
+        style: buttonStyle,
+        onMouseEnter: onEnter,
+        onMouseLeave: onLeave,
+      },
+        React.createElement('span', { style: { flex: 'none', display: 'inline-flex', color: 'var(--dsw-alias-label-secondary, #57606a)' } },
+          React.createElement(FallbackTerminalIcon, { size: 16 }),
+        ),
+        !rail ? React.createElement('span', null, '终端') : null,
+      )
+    }
+
+    /** Toast layer — separate additive shell.overlay cell (id dsh-editor-toast). */
+    function ToastLayer() {
+      useForce()
+      if (!state.toast) return null
+      return React.createElement('div', { className: 'dsh-editor-toast ' + state.toast.kind, role: 'status' },
+        state.toast.text,
       )
     }
 
@@ -1525,6 +1643,19 @@ window.__ModuleLoader__.load({
         (props) => React.createElement(ModeToggle, props),
       ))
 
+      // Terminal button — always visible at the sidebar foot (both modes).
+      slots.inject('sidebar.footer.action', () => slots.register(
+        { name: 'sidebar.footer.action', id: 'dsh-editor-terminal', order: 70, label: '终端' },
+        (props) => React.createElement(TerminalButton, props),
+      ))
+
+      // Toast layer — its own additive shell.overlay cell (never replaces the
+      // editor panel cell; the layer is click-through).
+      slots.inject('shell.overlay', () => slots.register(
+        { name: 'shell.overlay', id: 'dsh-editor-toast', order: 20, label: '终端提示' },
+        () => React.createElement(ToastLayer, null),
+      ))
+
       // Editor overlay — always registered; renders null unless editor mode.
       slots.inject('shell.overlay', () => slots.register(
         { name: 'shell.overlay', id: 'dsh-editor-panel', order: 10, label: '编辑器' },
@@ -1545,6 +1676,7 @@ window.__ModuleLoader__.load({
       })
 
       ctx.effect(() => () => {
+        if (toastTimer !== null) { clearTimeout(toastTimer); toastTimer = null }
         if (styleEl !== null) {
           try { styleEl.remove() } catch (e) { /* ignore */ }
           styleEl = null

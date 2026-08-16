@@ -69,6 +69,25 @@ if (!keys.includes('sidebar.footer.action')) throw new Error('missing footer tog
 if (!keys.includes('shell.overlay')) throw new Error('missing overlay panel')
 if (!keys.includes('sidebar.workspaces')) throw new Error('missing sidebar.workspaces injection')
 
+// footer action cells + overlay cells (1.12: terminal button + toast layer)
+const registerCalls = []
+slotsMock.register = (opts, comp) => { registerCalls.push({ opts, comp }); return () => {} }
+for (const r of registrations) {
+  if (r.key === 'sidebar.footer.action' || r.key === 'shell.overlay') {
+    const result = r.cb() // seat ready → occupant registers
+    if (typeof result === 'function') result()
+  }
+}
+const toggleReg = registerCalls.find((c) => c.opts && c.opts.id === 'dsh-editor-toggle')
+const terminalReg = registerCalls.find((c) => c.opts && c.opts.id === 'dsh-editor-terminal')
+const panelReg = registerCalls.find((c) => c.opts && c.opts.id === 'dsh-editor-panel')
+const toastReg = registerCalls.find((c) => c.opts && c.opts.id === 'dsh-editor-toast')
+if (!toggleReg) throw new Error('missing mode toggle registration')
+if (!terminalReg || typeof terminalReg.comp !== 'function') throw new Error('missing terminal button registration')
+if (!panelReg) throw new Error('missing editor panel registration')
+if (!toastReg) throw new Error('missing toast layer registration')
+console.log('✓ footer/overlay cells: toggle + terminal + panel + toast')
+
 // the sidebar.workspaces inject callback must only register when slot ready
 let treeRegistered = 0
 slotsMock.register = () => { treeRegistered += 1; return () => {} }
@@ -83,6 +102,7 @@ console.log('✓ sidebar.workspaces inject callback executed (mode off → no tr
 // CSS sanity
 if (!cssSeen.value.includes('body.dsh-editor-mode')) throw new Error('editor-mode CSS missing')
 if (!cssSeen.value.includes('data-shell-overlay')) throw new Error('frame selector CSS missing')
+if (!cssSeen.value.includes('.dsh-editor-toast')) throw new Error('toast CSS missing')
 console.log('✓ editor-mode CSS present (' + cssSeen.value.length + ' chars)')
 
 console.log('\nALL CLIENT SMOKE TESTS PASSED')

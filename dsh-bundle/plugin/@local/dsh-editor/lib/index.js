@@ -6,6 +6,7 @@
  *   GET  /dsh-editor/tree?root=   → { ok, root, title, tree, truncated }
  *   GET  /dsh-editor/file?root=&path= → { ok, path, content, size }
  *   POST /dsh-editor/file         → body { root, path, content } → { ok, path }
+ *   POST /dsh-editor-terminal/open → body { root?, dryRun? } → { ok, shell, cwd }
  *
  * Security model:
  *   - The tree/file endpoints only ever resolve paths under a workspace taken
@@ -14,6 +15,11 @@
  *   - Relative paths are sanitized (`..` and absolute segments rejected).
  *   - Text reads are capped (2 MB) so the browser never ingests a huge file;
  *     binary/known-heavy extensions are skipped in the tree walk.
+ *   - The terminal endpoint (1.12) spawns a NATIVE terminal window on the
+ *     local machine — the browser is expected to be on the same host (the
+ *     desktop launcher serves 127.0.0.1). The working directory is resolved
+ *     from the workspace registry (never a client-supplied absolute path);
+ *     `dryRun: true` validates resolution without spawning a window.
  *
  * Install: place this package under the profile's node_modules and add one
  * row to the profile cordis.patch.yml (see install-skin-plugin.mjs companion
@@ -21,7 +27,10 @@
  */
 
 import { promises as fsp } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { join, dirname, normalize, sep } from 'node:path'
+import cp from 'node:child_process' // CJS default export; tests stub cp.spawn
+import { homedir } from 'node:os'
 
 /** Cordis plugin name. */
 export const name = 'editor'
@@ -173,6 +182,111 @@ function readBody(req, limit) {
   })
 }
 
+// ── native terminal (1.12) ─────────────────────────────────────────────────
+// The desktop launcher runs the browser on the same machine, so opening a
+// real terminal window from the web process is the intended UX: prefer
+// Windows Terminal when installed, fall back to the classic cmd console.
+
+/** Pick the terminal program for this OS. Returns { exe, kind } or null. */
+function pickTerminal() {
+  if (process.platform !== 'win32') return null
+  try {
+    // Windows Terminal ships an App Execution Alias in %LOCALAPPDATA%\Microsoft\WindowsApps\wt.exe
+    const local = process.env.LOCALAPPDATA
+    if (local) {
+      const alias = join(local, 'Microsoft', 'WindowsApps', 'wt.exe')
+      if (existsSync(alias)) return { exe: alias, kind: 'wt' }
+    }
+  } catch (error) { /* env unavailable */ }
+  // cmd.exe is always present on Windows and gives a visible console window
+  // (detached spawn from a hidden parent allocates a new console).
+  return { exe: 'cmd.exe', kind: 'cmd' }
+}
+
+/** Working directory for the terminal: requested workspace → DSH_HOME → home. */
+function terminalCwd(ctx, root) {
+  const ws = workspaceById(ctx, root || undefined)
+  if (ws && ws.path) {
+    try {
+      if (existsSync(ws.path)) return ws.path
+    } catch (error) { /* stat failed, keep looking */ }
+  }
+  if (process.env.DSH_HOME) {
+    try {
+      if (existsSync(process.env.DSH_HOME)) return process.env.DSH_HOME
+    } catch (error) { /* ignore */ }
+  }
+  return homedir()
+}
+
+/** Spawn a detached native terminal rooted at `cwd`; never blocks. */
+function spawnTerminal(kind, exe, cwd) {
+  if (kind === 'wt') {
+    const child = cp.spawn(exe, ['-d', cwd], {
+      cwd,
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: false, // explicit: the window MUST be visible
+    })
+    if (child && child.unref) child.unref()
+    return
+  }
+  // cmd.exe MUST be launched through the `start` builtin: a directly spawned
+  // cmd with ignored stdio reads EOF on stdin and exits immediately. `start`
+  // allocates a fresh interactive console for the inner cmd (real console
+  // stdio), which then persists until the user closes it. The outer cmd /c is
+  // hidden (windowsHide) so only the terminal window appears.
+  const child = cp.spawn('cmd.exe', ['/c', 'start', 'DSH Terminal', 'cmd', '/k'], {
+    cwd,
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: true,
+  })
+  if (child && child.unref) child.unref()
+}
+
+/**
+ * POST /dsh-editor-terminal/open — body { root?, dryRun? }.
+ * NOTE: this lives on its OWN '/dsh-editor-terminal' prefix route: the app's
+ * webServer matches prefix routes by path SEGMENT, so '/dsh-editor-terminal/*'
+ * would never reach the '/dsh-editor' handler (and '/dsh-terminal/*' is owned
+ * by the app's built-in in-web terminal API).
+ */
+async function handleTerminalOpen(ctx, req, res) {
+  let body
+  try {
+    body = await readBody(req, MAX_POST_BYTES)
+  } catch (error) {
+    json(res, 413, { ok: false, error: esc(msg(error)) })
+    return
+  }
+  let payload = null
+  try {
+    payload = body && body.trim() ? JSON.parse(body) : null
+  } catch (error) {
+    json(res, 400, { ok: false, error: '请求体不是合法 JSON' })
+    return
+  }
+  const root = payload && typeof payload.root === 'string' ? payload.root : ''
+  const cwd = terminalCwd(ctx, root)
+  const term = pickTerminal()
+  if (!term) {
+    json(res, 500, { ok: false, error: '终端功能仅支持 Windows 桌面版' })
+    return
+  }
+  // dryRun validates cwd/shell resolution without popping a window
+  if (payload && payload.dryRun === true) {
+    json(res, 200, { ok: true, dryRun: true, shell: term.kind, exe: term.exe, cwd })
+    return
+  }
+  try {
+    spawnTerminal(term.kind, term.exe, cwd)
+    json(res, 200, { ok: true, shell: term.kind, cwd })
+  } catch (error) {
+    json(res, 500, { ok: false, error: '打开终端失败: ' + esc(msg(error)) })
+  }
+}
+
 export function apply(ctx) {
   // webServer is provided by a row that itself waits on webStartup, so it may
   // not exist yet when this row activates; inject() defers until it does.
@@ -286,5 +400,25 @@ export function apply(ctx) {
         }
       },
     }), 'dsh-editor: api routes')
+
+    // Terminal endpoint on its own segment prefix (see handleTerminalOpen).
+    webCtx.effect(() => webCtx.webServer.register({
+      kind: 'prefix',
+      path: '/dsh-editor-terminal',
+      handler: async (req, res) => {
+        const url = new URL(req.url || '/', 'http://dsh.local')
+        const path = url.pathname
+        try {
+          if (path === '/dsh-editor-terminal/open' && req.method === 'POST') {
+            await handleTerminalOpen(ctx, req, res)
+            return
+          }
+          res.writeHead(404)
+          res.end('not found')
+        } catch (error) {
+          json(res, 500, { ok: false, error: esc(msg(error)) })
+        }
+      },
+    }), 'dsh-editor: terminal route')
   })
 }
