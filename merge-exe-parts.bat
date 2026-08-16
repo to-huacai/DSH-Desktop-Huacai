@@ -12,6 +12,8 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
-echo Done. DSH-Desktop-Huacai-1.12.exe restored (120099741 bytes).
+echo Done. DSH-Desktop-Huacai-1.12.exe restored (120102078 bytes).
 pause
+
+
 

@@ -133,4 +133,38 @@ text = exports._termText(term2)
 if (!text.includes('line19')) throw new Error('scroll lost latest: ' + JSON.stringify(text))
 console.log('✓ emulator scrollback')
 
+// ── React render regression: hooks must stay consistent across modes ──
+// The terminal button/panel call useSessions — rendering them twice with a
+// different state.rootId (null vs set) catches conditional-hook violations
+// ("Rendered fewer hooks than expected") that crash the footer slot. The
+// mock is a REAL hook (useSyncExternalStore) so React enforces ordering.
+const ReactDOMServer = require('react-dom/server')
+const realUseSessions = (sel) => {
+  const snap = React.useSyncExternalStore(
+    () => () => {},
+    () => ({ ids: [], byId: {}, current: undefined }),
+    () => ({ ids: [], byId: {}, current: undefined }),
+  )
+  return sel(snap)
+}
+let html
+exports._testTerminalOpen(false)
+html = ReactDOMServer.renderToString(exports._termButtonElement({ wide: true, useSessions: realUseSessions }))
+if (!html.includes('终端')) throw new Error('button render missing label: ' + html.slice(0, 120))
+// switch "mode": rootId becomes set (editor mode) → hook count must stay stable
+exports._testTreeRoot('ws-x')
+html = ReactDOMServer.renderToString(exports._termButtonElement({ wide: true, useSessions: realUseSessions }))
+if (!html.includes('终端')) throw new Error('button render broken after rootId change: ' + html.slice(0, 120))
+exports._testTreeRoot(null)
+console.log('✓ TerminalButton renders consistently across modes (hook rules)')
+
+exports._testTerminalOpen(true)
+html = ReactDOMServer.renderToString(exports._termPanelElement({ useSessions: realUseSessions }))
+if (!html.includes('dsh-editor-term-panel')) throw new Error('panel render missing root class')
+if (!html.includes('重新启动') || !html.includes('外部终端')) throw new Error('panel header buttons missing')
+exports._testTerminalOpen(false)
+html = ReactDOMServer.renderToString(exports._termPanelElement({ useSessions: realUseSessions }))
+if (html.trim() !== '') throw new Error('panel should render nothing when closed')
+console.log('✓ TerminalPanel renders header + viewport (hook rules)')
+
 console.log('\nALL CLIENT SMOKE TESTS PASSED')

@@ -381,8 +381,10 @@ window.__ModuleLoader__.load({
       'color:var(--dsw-alias-label-primary,#1f2328);}',
       '.dsh-editor-toast.err{background:#fff1f0;border:1px solid rgba(207,34,46,.35);color:#cf222e;}',
       'body[data-ds-dark-theme] .dsh-editor-toast.err{background:rgba(207,34,46,.18);border-color:rgba(207,34,46,.5);color:#ffb3b0;}',
-      // embedded terminal panel (1.12) — fixed bottom bar, Qoder-style
-      '.dsh-editor-term-panel{position:fixed;left:0;right:0;bottom:0;height:240px;z-index:15;display:flex;flex-direction:column;',
+      // embedded terminal panel (1.12) — fixed bottom bar, Qoder-style.
+      // `left` tracks the sidebar/file-tree column (measured live) so the
+      // sidebar footer actions stay visible while the panel is open.
+      '.dsh-editor-term-panel{position:fixed;left:var(--dsh-term-left,0px);right:0;bottom:0;height:240px;z-index:15;display:flex;flex-direction:column;',
       'pointer-events:auto;background:#0d1117;color:#e6edf3;border-top:1px solid rgba(255,255,255,.14);',
       'font-family:var(--ds-font-mono,ui-monospace,"Cascadia Code",Consolas,monospace);box-shadow:0 -6px 24px rgba(0,0,0,.22);}',
       '.dsh-editor-term-head{display:flex;align-items:center;gap:8px;height:34px;flex:none;padding:0 10px;box-sizing:border-box;',
@@ -805,23 +807,32 @@ window.__ModuleLoader__.load({
       }, 3200)
     }
 
-    /** Workspace id for the terminal: editor-mode tree root first, then the
-     *  current conversation session's workspace (both modes), else '' (the
-     *  node half falls back to the first registry workspace). Called during
-     *  render only — it reads the useSessions hook. */
-    function terminalRootId(props) {
-      if (state.rootId) return state.rootId
+    /**
+     * Workspace id for the terminal: editor-mode tree root first, then the
+     * current conversation session's workspace (both modes), else '' (the
+     * node half falls back to the first registry workspace).
+     *
+     * HOOK RULE: this is a React hook — it must be called unconditionally at
+     * the top of a component's render (never inside effects/handlers, never
+     * behind a condition), or React throws. Returns the workspaceId of the
+     * current session when available.
+     */
+    function useTermSessionWorkspace(props) {
+      const useSessions = props && typeof props.useSessions === 'function' ? props.useSessions : null
+      if (!useSessions) return ''
+      const list = useSessions((s) => s)
       try {
-        const useSessions = props && typeof props.useSessions === 'function' ? props.useSessions : null
-        if (useSessions) {
-          const list = useSessions((s) => s)
-          const current = list && list.current
-          const byId = list && list.byId
-          const session = current !== undefined && current !== null && byId ? (byId[current] || undefined) : undefined
-          if (session && session.workspaceId) return session.workspaceId
-        }
+        const current = list && list.current
+        const byId = list && list.byId
+        const session = current !== undefined && current !== null && byId ? (byId[current] || undefined) : undefined
+        if (session && session.workspaceId) return session.workspaceId
       } catch (e) { /* no sessions data available */ }
       return ''
+    }
+
+    /** Pure root computation (no hooks): tree root wins, then session workspace. */
+    function termRootFor(sessionWorkspace) {
+      return state.rootId || sessionWorkspace || ''
     }
 
     /** Open a native terminal rooted at the current workspace. */
@@ -853,9 +864,10 @@ window.__ModuleLoader__.load({
       useForce()
       const wide = !props || props.wide !== false
       const rail = !wide
-      // resolve the current session's workspace during render (hook rules)
+      // hooks FIRST, unconditionally (never behind a condition)
       const rootRef = React.useRef('')
-      rootRef.current = terminalRootId(props)
+      const sessionWorkspace = useTermSessionWorkspace(props)
+      rootRef.current = termRootFor(sessionWorkspace)
       const base = {
         boxSizing: 'border-box', cursor: 'pointer',
         color: 'var(--dsw-alias-label-primary, #1f2328)',
@@ -1487,15 +1499,19 @@ window.__ModuleLoader__.load({
     /** Build the DOM scaffold for the terminal viewport (once per mount). */
     function termEnsureEls(viewportEl) {
       if (termEmuEls && termEmuEls.viewport === viewportEl) return termEmuEls
+      // font probe: an absolutely-positioned span WITHOUT left/right so its
+      // offsetWidth equals the text width (10 cells), inheriting the panel font
       const probe = document.createElement('span')
-      probe.className = 'dsh-editor-term-line'
       probe.style.position = 'absolute'
       probe.style.visibility = 'hidden'
       probe.style.whiteSpace = 'pre'
+      probe.style.left = '0'
+      probe.style.top = '0'
+      probe.style.pointerEvents = 'none'
       probe.textContent = '0123456789'
       viewportEl.appendChild(probe)
       const lineEls = []
-      for (let i = 0; i < 60; i++) {
+      for (let i = 0; i < 80; i++) {
         const el = document.createElement('div')
         el.className = 'dsh-editor-term-line'
         el.style.visibility = 'hidden'
@@ -1516,6 +1532,19 @@ window.__ModuleLoader__.load({
       termEmuEls = { viewport: viewportEl, probe, lineEls, cursor, ta, cellW: 8, cellH: 19 }
       termUpdateMetrics()
       return termEmuEls
+    }
+
+    /** Keep the terminal panel clear of the sidebar: measure the frame's first
+     *  column (the sidebar / file tree) so the footer buttons stay visible. */
+    function termMeasureLeft() {
+      try {
+        const overlay = document.querySelector('[data-shell-overlay]')
+        const frame = overlay && overlay.parentElement
+        const first = frame && frame.firstElementChild
+        if (first && first.offsetWidth > 0) {
+          document.documentElement.style.setProperty('--dsh-term-left', first.offsetWidth + 'px')
+        }
+      } catch (e) { /* ignore */ }
     }
 
     function termUpdateMetrics() {
@@ -1639,7 +1668,11 @@ window.__ModuleLoader__.load({
       useForce()
       if (!state.terminalOpen) return null
       const viewportRef = React.useRef(null)
-      const taRef = React.useRef(null)
+      const rootRef = React.useRef('')
+      // hooks FIRST, unconditionally (useSessions must never run inside the
+      // effect or a click handler — that would throw and kill the panel)
+      const sessionWorkspace = useTermSessionWorkspace(props)
+      rootRef.current = termRootFor(sessionWorkspace)
 
       React.useEffect(() => {
         const viewportEl = viewportRef.current
@@ -1648,15 +1681,19 @@ window.__ModuleLoader__.load({
         termEnsureEls(viewportEl)
         termSetupInput()
         termUpdateMetrics()
+        termMeasureLeft()
         if (!(termNet.ws && (termNet.ws.readyState === 0 || termNet.ws.readyState === 1))) {
-          termConnect(terminalRootId(props))
+          termConnect(rootRef.current)
         }
-        // measure again after fonts settle
-        const t1 = setTimeout(() => termUpdateMetrics(), 120)
-        const t2 = setTimeout(() => termUpdateMetrics(), 600)
+        // measure again after fonts settle + when the layout (sidebar width,
+        // window size) changes
+        const t1 = setTimeout(() => { termUpdateMetrics(); termMeasureLeft() }, 120)
+        const t2 = setTimeout(() => { termUpdateMetrics(); termMeasureLeft() }, 600)
+        const onResize = () => { termUpdateMetrics(); termMeasureLeft() }
+        window.addEventListener('resize', onResize)
         let ro = null
         try {
-          ro = new ResizeObserver(() => termUpdateMetrics())
+          ro = new ResizeObserver(onResize)
           ro.observe(viewportEl)
         } catch (e) { /* no ResizeObserver */ }
         const onWheel = (e) => {
@@ -1671,6 +1708,7 @@ window.__ModuleLoader__.load({
         return () => {
           clearTimeout(t1)
           clearTimeout(t2)
+          window.removeEventListener('resize', onResize)
           if (ro) { try { ro.disconnect() } catch (e) { /* ignore */ } }
           viewportEl.removeEventListener('wheel', onWheel)
         }
@@ -1706,7 +1744,7 @@ window.__ModuleLoader__.load({
           type: 'button',
           className: 'dsh-editor-term-btn',
           title: '在系统终端中打开当前工作区目录',
-          onClick: () => openTerminal(terminalRootId(props)),
+          onClick: () => openTerminal(rootRef.current),
         }, '外部终端'),
         React.createElement('button', {
           type: 'button',
@@ -1719,8 +1757,7 @@ window.__ModuleLoader__.load({
       const viewport = React.createElement('div', {
         className: 'dsh-editor-term-viewport',
         ref: viewportRef,
-        onClick: () => { if (taRef.current) taRef.current.focus() },
-        onKeyDown: (e) => { /* keys handled on the textarea */ },
+        onClick: () => { if (termEmuEls && termEmuEls.ta) termEmuEls.ta.focus() },
       })
 
       const banner = state.termStatus === 'error' && state.termError
@@ -2631,6 +2668,11 @@ window.__ModuleLoader__.load({
     exports._termFeed = function (emu, text) { emu.feed(text) }
     exports._termText = function (emu) { return emu.screenText() }
     exports._termWidthOf = termCharWidth
+    // component render hooks (React renderToString regression tests)
+    exports._termButtonElement = function (props) { return React.createElement(TerminalButton, props) }
+    exports._termPanelElement = function (props) { return React.createElement(TerminalPanel, props) }
+    exports._testTerminalOpen = function (open) { state.terminalOpen = !!open; emit() }
+    exports._testTreeRoot = function (rootId) { state.rootId = rootId || null; emit() }
     return module.exports
   },
 })
