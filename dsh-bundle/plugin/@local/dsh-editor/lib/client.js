@@ -1383,6 +1383,7 @@ window.__ModuleLoader__.load({
       pid: 0,
       reconnectTimer: null,
       discard: false,
+      failCount: 0, // consecutive connect failures (for the error banner)
     }
 
     function termStatusText() {
@@ -1460,8 +1461,17 @@ window.__ModuleLoader__.load({
       }
       ws.onclose = () => {
         termNet.ws = null
-        if (termNet.discard) { termNet.discard = false; termSetStatus('closed'); return }
-        termSetStatus('closed')
+        if (termNet.discard) { termNet.discard = false; termNet.failCount = 0; termSetStatus('closed'); return }
+        termNet.failCount += 1
+        if (termNet.failCount >= 4 && state.terminalOpen) {
+          // persistent failure: give the user an actionable message instead of
+          // a silently empty panel (usually: an old server without the route)
+          termSetStatus('error', {
+            termError: '无法连接终端服务（可能正在运行旧版 DSH 服务）。请完全退出应用后重新打开。',
+          })
+        } else {
+          termSetStatus('closed')
+        }
         termScheduleReconnect()
       }
       ws.onerror = () => { /* onclose follows */ }
@@ -1666,24 +1676,32 @@ window.__ModuleLoader__.load({
     /** Embedded terminal panel — fixed bottom bar, both modes. */
     function TerminalPanel(props) {
       useForce()
-      if (!state.terminalOpen) return null
+      // ALL hooks (including useEffect) must run BEFORE any early return:
+      // React #310 is thrown when closing→opening changes the hook count.
+      // The effect also keys on state.terminalOpen so it re-runs when the
+      // panel opens ([] would run once at mount while the panel is closed
+      // and never initialize the viewport).
       const viewportRef = React.useRef(null)
       const rootRef = React.useRef('')
-      // hooks FIRST, unconditionally (useSessions must never run inside the
-      // effect or a click handler — that would throw and kill the panel)
       const sessionWorkspace = useTermSessionWorkspace(props)
       rootRef.current = termRootFor(sessionWorkspace)
 
       React.useEffect(() => {
         const viewportEl = viewportRef.current
         if (!viewportEl) return undefined
-        termEnsureEmu()
-        termEnsureEls(viewportEl)
-        termSetupInput()
-        termUpdateMetrics()
-        termMeasureLeft()
-        if (!(termNet.ws && (termNet.ws.readyState === 0 || termNet.ws.readyState === 1))) {
-          termConnect(rootRef.current)
+        try {
+          termEnsureEmu()
+          termEnsureEls(viewportEl)
+          termSetupInput()
+          termUpdateMetrics()
+          termMeasureLeft()
+          if (!(termNet.ws && (termNet.ws.readyState === 0 || termNet.ws.readyState === 1))) {
+            termConnect(rootRef.current)
+          }
+        } catch (e) {
+          // surface ANY panel-mount failure instead of a silent blank panel
+          termSetStatus('error', { termError: '面板初始化失败: ' + (e && e.message ? e.message : String(e)) })
+          try { console.error('[dsh-editor] terminal panel init failed:', e) } catch (err) { /* ignore */ }
         }
         // measure again after fonts settle + when the layout (sidebar width,
         // window size) changes
@@ -1713,7 +1731,9 @@ window.__ModuleLoader__.load({
           viewportEl.removeEventListener('wheel', onWheel)
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
-      }, [])
+      }, [state.terminalOpen])
+
+      if (!state.terminalOpen) return null
 
       const header = React.createElement('div', { className: 'dsh-editor-term-head' },
         React.createElement('span', { className: 'dsh-editor-term-head-title' },
@@ -2561,6 +2581,20 @@ window.__ModuleLoader__.load({
         }
 
       ensureStyle()
+
+      // debug handle for headless-browser / console inspection
+      try {
+        window.__dshEditorTerm = {
+          status: () => state.termStatus,
+          error: () => state.termError,
+          meta: () => state.termMeta,
+          wsState: () => (termNet.ws ? termNet.ws.readyState : -1),
+          wsUrl: () => (termNet.ws ? termNet.ws.url : ''),
+          emu: () => (termEmu ? { cols: termEmu.cols, rows: termEmu.rows, lines: termEmu.lines.length, offset: termEmu.offset } : null),
+          els: () => (termEmuEls ? { lines: termEmuEls.lineEls.length, cellW: termEmuEls.cellW, cellH: termEmuEls.cellH } : null),
+          open: (rootId) => setTerminalOpen(true, rootId),
+        }
+      } catch (e) { /* no window (tests) */ }
 
       // Mode toggle — always visible at the sidebar foot (both modes).
       slots.inject('sidebar.footer.action', () => slots.register(
