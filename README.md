@@ -47,7 +47,7 @@ DSH-Desktop-Huacai 是一个基于 DeepSeek Harness 的自包含桌面客户端�
 ├── build.ps1                    # 构建脚本（产出 exe）
 ├── run-test.ps1                 # 测试脚本
 ├── merge-exe-parts.bat          # 合并分卷，还原发布版 exe
-├── DSH-Desktop-Huacai-1.13.exe.part1/.part2  # 发布版分卷（各 <100MB）
+├── DSH-Desktop-Huacai-1.14.exe.part1/.part2  # 发布版分卷（各 <100MB）
 ├── 使用说明.md / 更新文档.md / 新增功能说明.md
 └── LICENSE
 ```
@@ -56,16 +56,16 @@ DSH-Desktop-Huacai 是一个基于 DeepSeek Harness 的自包含桌面客户端�
 
 ## 获取发布版
 
-Gitee 免费仓库单文件上限 100MB，发布版 exe（约 123MB）拆为两个分卷提交。获取方式：
+Gitee 免费仓库单文件上限 100MB，发布版 exe（约 126MB）拆为两个分卷提交。获取方式：
 
 ```powershell
 git clone https://gitee.com/huacaicaicai/dsh-desktop-huacai.git
 cd dsh-desktop-huacai
 # 合并分卷（也可直接双击 merge-exe-parts.bat）：
-copy /b "DSH-Desktop-Huacai-1.13.exe.part1" + "DSH-Desktop-Huacai-1.13.exe.part2" "DSH-Desktop-Huacai-1.13.exe"
+copy /b "DSH-Desktop-Huacai-1.14.exe.part1" + "DSH-Desktop-Huacai-1.14.exe.part2" "DSH-Desktop-Huacai-1.14.exe"
 ```
 
-合并后双击 `DSH-Desktop-Huacai-1.13.exe` 即可运行（Windows 10/11，无需安装任何东西）。
+合并后双击 `DSH-Desktop-Huacai-1.14.exe` 即可运行（Windows 10/11，无需安装任何东西）。
 > 合并前请确保该 exe 未在运行；分卷完整性已验证（合并哈希与原文件一致）。
 
 ## 从源码构建
@@ -73,7 +73,7 @@ copy /b "DSH-Desktop-Huacai-1.13.exe.part1" + "DSH-Desktop-Huacai-1.13.exe.part2
 构建机需要：Windows、.NET Framework 4.x（含系统 csc）、Node.js。
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File build.ps1 -OutExe DSH-Desktop-Huacai-1.13.exe
+powershell -ExecutionPolicy Bypass -File build.ps1 -OutExe DSH-Desktop-Huacai-1.14.exe
 ```
 
 脚本流程：提取上一版 exe 的内嵌插件（自举构建）→ 叠加 `dsh-bundle\` → 打包内置 Node 运行时 → 从 npx 缓存复制最新 dsh（或 `-FreshApp` 走 npm）→ 编译启动器 → 组装新 exe。

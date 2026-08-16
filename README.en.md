@@ -47,7 +47,7 @@ DSH-Desktop-Huacai is a self-contained desktop client built on DeepSeek Harness.
 ├── build.ps1                    # Build script (produces the exe)
 ├── run-test.ps1                 # Test script
 ├── merge-exe-parts.bat          # Recombine split parts back into the release exe
-├── DSH-Desktop-Huacai-1.13.exe.part1/.part2  # Release exe split parts (each <100MB)
+├── DSH-Desktop-Huacai-1.14.exe.part1/.part2  # Release exe split parts (each <100MB)
 ├── 使用说明.md / 更新文档.md / 新增功能说明.md  # Chinese docs (usage / updates / new features)
 └── LICENSE
 ```
@@ -56,16 +56,16 @@ DSH-Desktop-Huacai is a self-contained desktop client built on DeepSeek Harness.
 
 ## Getting the Release Build
 
-Gitee free repositories cap single files at 100MB, so the ~123MB release exe is committed as two split parts:
+Gitee free repositories cap single files at 100MB, so the ~126MB release exe is committed as two split parts:
 
 ```powershell
 git clone https://gitee.com/huacaicaicai/dsh-desktop-huacai.git
 cd dsh-desktop-huacai
 # Recombine the parts (or simply double-click merge-exe-parts.bat):
-copy /b "DSH-Desktop-Huacai-1.13.exe.part1" + "DSH-Desktop-Huacai-1.13.exe.part2" "DSH-Desktop-Huacai-1.13.exe"
+copy /b "DSH-Desktop-Huacai-1.14.exe.part1" + "DSH-Desktop-Huacai-1.14.exe.part2" "DSH-Desktop-Huacai-1.14.exe"
 ```
 
-Then double-click `DSH-Desktop-Huacai-1.13.exe` to run (Windows 10/11, nothing to install).
+Then double-click `DSH-Desktop-Huacai-1.14.exe` to run (Windows 10/11, nothing to install).
 > Make sure the exe is not running before recombining; the parts have been verified (combined hash matches the original file).
 
 ## Building from Source
@@ -73,7 +73,7 @@ Then double-click `DSH-Desktop-Huacai-1.13.exe` to run (Windows 10/11, nothing t
 Build machine requirements: Windows, .NET Framework 4.x (with the built-in csc), Node.js.
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File build.ps1 -OutExe DSH-Desktop-Huacai-1.13.exe
+powershell -ExecutionPolicy Bypass -File build.ps1 -OutExe DSH-Desktop-Huacai-1.14.exe
 ```
 
 The script extracts the embedded plugins from the previous exe (self-bootstrapping build) → overlays `dsh-bundle\` → packages the embedded Node runtime → copies the latest dsh from the npx cache (or `-FreshApp` to install from npm) → compiles the launcher → assembles the new exe.
