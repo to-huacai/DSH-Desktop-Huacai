@@ -139,7 +139,12 @@ window.__ModuleLoader__.load({
       sessionMenuOpen: false, // session dropdown (chat-column top bar)
       sessionQuery: '',
       toast: null, // { text, kind: 'ok'|'err' } — transient top-center toast (1.12)
-      terminalBusy: false, // terminal button in-flight (1.12)
+      terminalBusy: false, // native terminal button in-flight (1.12)
+      terminalOpen: false, // embedded terminal panel visible (1.12)
+      termShell: '', // embedded shell preference: '' | 'cmd' | 'powershell' (1.12)
+      termStatus: 'closed', // embedded terminal status: closed|connecting|open|exited|error (1.12)
+      termMeta: null, // { cwd, shell, pid } from the server (1.12)
+      termError: '', // last embedded-terminal error message (1.12)
     }
 
       /** Runtime session opener, wired in apply() once the sessions service is available. */
@@ -376,6 +381,36 @@ window.__ModuleLoader__.load({
       'color:var(--dsw-alias-label-primary,#1f2328);}',
       '.dsh-editor-toast.err{background:#fff1f0;border:1px solid rgba(207,34,46,.35);color:#cf222e;}',
       'body[data-ds-dark-theme] .dsh-editor-toast.err{background:rgba(207,34,46,.18);border-color:rgba(207,34,46,.5);color:#ffb3b0;}',
+      // embedded terminal panel (1.12) — fixed bottom bar, Qoder-style
+      '.dsh-editor-term-panel{position:fixed;left:0;right:0;bottom:0;height:240px;z-index:15;display:flex;flex-direction:column;',
+      'pointer-events:auto;background:#0d1117;color:#e6edf3;border-top:1px solid rgba(255,255,255,.14);',
+      'font-family:var(--ds-font-mono,ui-monospace,"Cascadia Code",Consolas,monospace);box-shadow:0 -6px 24px rgba(0,0,0,.22);}',
+      '.dsh-editor-term-head{display:flex;align-items:center;gap:8px;height:34px;flex:none;padding:0 10px;box-sizing:border-box;',
+      'background:#161b22;border-bottom:1px solid rgba(255,255,255,.08);font-size:12px;color:#8b949e;font-family:inherit;}',
+      '.dsh-editor-term-head-title{flex:none;display:inline-flex;align-items:center;gap:6px;font-weight:600;color:#e6edf3;}',
+      '.dsh-editor-term-head-title svg{color:#8b949e;}',
+      '.dsh-editor-term-dot{flex:none;width:8px;height:8px;border-radius:50%;background:#8b949e;}',
+      '.dsh-editor-term-dot.open{background:#3fb950;}',
+      '.dsh-editor-term-dot.connecting{background:#d29922;}',
+      '.dsh-editor-term-dot.exited,.dsh-editor-term-dot.error{background:#f85149;}',
+      '.dsh-editor-term-cwd{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;text-align:left;color:#8b949e;}',
+      '.dsh-editor-term-shell{flex:none;padding:1px 8px;border-radius:10px;background:rgba(255,255,255,.08);color:#e6edf3;font-size:11px;}',
+      '.dsh-editor-term-select{flex:none;padding:2px 6px;border-radius:8px;border:1px solid rgba(255,255,255,.18);background:#0d1117;',
+      'color:#e6edf3;font-size:11px;outline:none;font-family:inherit;cursor:pointer;}',
+      '.dsh-editor-term-btn{flex:none;padding:3px 10px;border-radius:8px;border:1px solid rgba(255,255,255,.18);background:transparent;',
+      'color:#c9d1d9;font-size:11px;cursor:pointer;font-family:inherit;}',
+      '.dsh-editor-term-btn:hover{background:rgba(255,255,255,.1);}',
+      '.dsh-editor-term-btn.close{display:inline-flex;align-items:center;padding:3px 8px;}',
+      '.dsh-editor-term-viewport{position:relative;flex:1;min-height:0;overflow:hidden;padding:6px 10px;background:#0d1117;cursor:text;}',
+      '.dsh-editor-term-line{position:absolute;left:10px;right:10px;white-space:pre;font-size:13px;line-height:1.45;color:#e6edf3;}',
+      '.dsh-editor-term-cursor{position:absolute;width:8px;background:#e6edf3;animation:dsh-term-blink 1s steps(1) infinite;pointer-events:none;}',
+      '@keyframes dsh-term-blink{0%,55%{opacity:1}56%,100%{opacity:0}}',
+      '.dsh-editor-term-hidden-ta{position:absolute;opacity:0;width:2px;height:2px;left:0;top:0;border:none;padding:0;resize:none;overflow:hidden;}',
+      // keep content clear of the panel while it is open
+      'body.dsh-editor-terminal-open [data-slot="conversation"]>div{padding-bottom:248px;box-sizing:border-box;}',
+      'body.dsh-editor-terminal-open .dsh-editor-panel{bottom:248px;}',
+      '.dsh-editor-term-banner{position:absolute;left:0;right:0;top:0;bottom:0;display:flex;align-items:center;justify-content:center;',
+      'background:#0d1117;color:#f85149;font-size:13px;font-family:inherit;z-index:2;padding:12px;text-align:center;}',
     ].join('')
 
     // ── API helpers ────────────────────────────────────────────────────────
@@ -835,8 +870,8 @@ window.__ModuleLoader__.load({
       const onLeave = (e) => { e.currentTarget.style.background = 'transparent' }
       return React.createElement('button', {
         type: 'button',
-        onClick: () => openTerminal(rootRef.current),
-        title: '打开终端（当前工作区目录）',
+        onClick: () => setTerminalOpen(!state.terminalOpen, rootRef.current),
+        title: state.terminalOpen ? '关闭内置终端面板' : '打开内置终端面板（Qoder 式，当前工作区目录）',
         'aria-label': '打开终端',
         disabled: state.terminalBusy,
         style: buttonStyle,
@@ -857,6 +892,859 @@ window.__ModuleLoader__.load({
       return React.createElement('div', { className: 'dsh-editor-toast ' + state.toast.kind, role: 'status' },
         state.toast.text,
       )
+    }
+
+    // ── embedded terminal (1.12): mini ANSI emulator + WebSocket panel ─────
+    // A dependency-free xterm-ish emulator (grid + SGR colors + scrollback +
+    // wide-char handling) fed by a ConPTY shell relayed over /dsh-editor-terminal/ws.
+
+    // style interning
+    const termStyleIds = new Map()
+    const termStyles = []
+    function termStyleId(fg, bg, bold, dim, ul, inv) {
+      const key = fg + ',' + bg + ',' + (bold ? 1 : 0) + (dim ? 1 : 0) + (ul ? 1 : 0) + (inv ? 1 : 0)
+      let id = termStyleIds.get(key)
+      if (id === undefined) {
+        id = termStyles.length
+        termStyles.push({ fg, bg, bold: !!bold, dim: !!dim, ul: !!ul, inv: !!inv })
+        termStyleIds.set(key, id)
+      }
+      return id
+    }
+    termStyleId(-1, -1, false, false, false, false) // style 0 = default
+
+    // truecolor ids encode rgb directly (>= 1000000)
+    function termTrueColorId(r, g, b) {
+      return 1000000 + ((r & 255) << 16) + ((g & 255) << 8) + (b & 255)
+    }
+    function termCssColor(id) {
+      if (id === -1) return null
+      if (id >= 1000000) {
+        const v = id - 1000000
+        return 'rgb(' + ((v >> 16) & 255) + ',' + ((v >> 8) & 255) + ',' + (v & 255) + ')'
+      }
+      if (id >= 16 && id <= 255) {
+        let r, g, b
+        if (id <= 231) {
+          const n = id - 16
+          const step = [0, 95, 135, 175, 215, 255]
+          r = step[Math.floor(n / 36)]
+          g = step[Math.floor((n % 36) / 6)]
+          b = step[n % 6]
+        } else {
+          const v = 8 + 10 * (id - 232)
+          r = v; g = v; b = v
+        }
+        return 'rgb(' + r + ',' + g + ',' + b + ')'
+      }
+      const PALETTE = [
+        '#000000', '#cd3131', '#0dbc79', '#e5e510', '#2472c8', '#bc3fbc', '#0abeb0', '#e5e5e5',
+        '#666666', '#f14c4c', '#23d18b', '#f5f543', '#3b8eea', '#d670d6', '#29b8db', '#ffffff',
+      ]
+      return PALETTE[id] || null
+    }
+
+    /** Display width of one code point (0 = combining, 2 = wide CJK). */
+    function termCharWidth(cp) {
+      if (cp === 0 || cp === 0x200d) return 0
+      if ((cp >= 0x1100 && cp <= 0x115f) || (cp >= 0x2e80 && cp <= 0xa4cf) ||
+        (cp >= 0xac00 && cp <= 0xd7a3) || (cp >= 0xf900 && cp <= 0xfaff) ||
+        (cp >= 0xfe30 && cp <= 0xfe4f) || (cp >= 0xff00 && cp <= 0xff60) ||
+        (cp >= 0xffe0 && cp <= 0xffe6) || (cp >= 0x1f300 && cp <= 0x1faff)) return 2
+      return 1
+    }
+
+    /**
+     * Minimal xterm-compatible emulator. `lines` holds history + screen (the
+     * screen is always the LAST `rows` lines). Cursor rows are screen-relative.
+     */
+    class TermEmu {
+      constructor(cols, rows, maxHistory) {
+        this.maxHistory = maxHistory || 1500
+        this.cols = cols
+        this.rows = rows
+        this.lines = []
+        this.cursor = { r: 0, c: 0 }
+        this.saved = { r: 0, c: 0 }
+        this.cursorVisible = true
+        this.curStyle = { fg: -1, bg: -1, bold: false, dim: false, ul: false, inv: false }
+        this.offset = 0 // scrollback offset in lines (0 = live)
+        this.dirtyAll = true
+        this.escState = 0 // 0 normal, 1 esc, 2 csi, 3 osc, 4 ignore-until-st, 5 one-char
+        this.escBuf = ''
+        this.reset()
+      }
+      newLine() {
+        return { ch: new Array(this.cols).fill(' '), st: new Array(this.cols).fill(0) }
+      }
+      reset() {
+        this.lines = []
+        for (let r = 0; r < this.rows; r++) this.lines.push(this.newLine())
+        this.cursor = { r: 0, c: 0 }
+        this.saved = { r: 0, c: 0 }
+        this.cursorVisible = true
+        this.curStyle = { fg: -1, bg: -1, bold: false, dim: false, ul: false, inv: false }
+        this.offset = 0
+        this.escState = 0
+        this.escBuf = ''
+        this.dirtyAll = true
+      }
+      absRow() {
+        return this.lines.length - this.rows + this.cursor.r
+      }
+      styleNow() {
+        const s = this.curStyle
+        return termStyleId(s.fg, s.bg, s.bold, s.dim, s.ul, s.inv)
+      }
+      scrollUpOne() {
+        this.lines.splice(this.lines.length - this.rows, 1)
+        this.lines.push(this.newLine())
+        if (this.lines.length > this.rows + this.maxHistory) {
+          this.lines.splice(0, this.lines.length - this.rows - this.maxHistory)
+        }
+        this.dirtyAll = true
+      }
+      linefeed() {
+        this.cursor.r += 1
+        if (this.cursor.r >= this.rows) {
+          this.cursor.r = this.rows - 1
+          this.scrollUpOne()
+        } else {
+          this.dirtyAll = true
+        }
+      }
+      putChar(str, width) {
+        if (width === 0) return // combining char: ignore (no base-cell merge for v1)
+        const abs = this.absRow()
+        const line = this.lines[abs]
+        const st = this.styleNow()
+        const c = this.cursor.c
+        if (c < this.cols) {
+          line.ch[c] = str
+          line.st[c] = st
+          if (width === 2 && c + 1 < this.cols) {
+            line.ch[c + 1] = '\0' // wide-char placeholder cell
+            line.st[c + 1] = st
+          }
+        }
+        this.cursor.c += width
+        if (this.cursor.c >= this.cols) {
+          this.cursor.c = 0
+          this.linefeed()
+        }
+      }
+      eraseLine(mode) {
+        const abs = this.absRow()
+        const line = this.lines[abs]
+        const from = mode === 1 ? 0 : this.cursor.c
+        const to = mode === 0 ? this.cols : this.cursor.c + 1
+        for (let c = from; c < to && c < this.cols; c++) {
+          line.ch[c] = ' '
+          line.st[c] = 0
+        }
+        this.dirtyAll = true
+      }
+      eraseDisplay(mode) {
+        if (mode === 2 || mode === 3) {
+          for (let r = 0; r < this.rows; r++) {
+            const line = this.lines[this.lines.length - this.rows + r]
+            for (let c = 0; c < this.cols; c++) { line.ch[c] = ' '; line.st[c] = 0 }
+          }
+        } else if (mode === 1) {
+          for (let r = 0; r <= this.cursor.r; r++) {
+            const abs = this.lines.length - this.rows + r
+            const line = this.lines[abs]
+            const from = r === this.cursor.r ? 0 : 0
+            const to = r === this.cursor.r ? this.cursor.c + 1 : this.cols
+            for (let c = from; c < to; c++) { line.ch[c] = ' '; line.st[c] = 0 }
+          }
+        } else {
+          for (let r = this.cursor.r; r < this.rows; r++) {
+            const abs = this.lines.length - this.rows + r
+            const line = this.lines[abs]
+            const from = r === this.cursor.r ? this.cursor.c : 0
+            for (let c = from; c < this.cols; c++) { line.ch[c] = ' '; line.st[c] = 0 }
+          }
+        }
+        this.dirtyAll = true
+      }
+      eraseChars(n) {
+        const abs = this.absRow()
+        const line = this.lines[abs]
+        for (let i = 0; i < n && this.cursor.c + i < this.cols; i++) {
+          line.ch[this.cursor.c + i] = ' '
+          line.st[this.cursor.c + i] = 0
+        }
+        this.dirtyAll = true
+      }
+      deleteChars(n) {
+        const abs = this.absRow()
+        const line = this.lines[abs]
+        for (let i = this.cursor.c; i < this.cols - n; i++) {
+          line.ch[i] = line.ch[i + n]
+          line.st[i] = line.st[i + n]
+        }
+        for (let i = Math.max(this.cursor.c, this.cols - n); i < this.cols; i++) {
+          line.ch[i] = ' '
+          line.st[i] = 0
+        }
+        this.dirtyAll = true
+      }
+      insertChars(n) {
+        const abs = this.absRow()
+        const line = this.lines[abs]
+        for (let i = this.cols - 1; i >= this.cursor.c + n; i--) {
+          line.ch[i] = line.ch[i - n]
+          line.st[i] = line.st[i - n]
+        }
+        for (let i = this.cursor.c; i < this.cursor.c + n && i < this.cols; i++) {
+          line.ch[i] = ' '
+          line.st[i] = 0
+        }
+        this.dirtyAll = true
+      }
+      insertLines(n) {
+        for (let i = 0; i < n; i++) {
+          this.lines.splice(this.lines.length - this.rows + this.cursor.r, 0, this.newLine())
+          this.lines.pop() // drop the last screen line
+        }
+        this.dirtyAll = true
+      }
+      deleteLines(n) {
+        for (let i = 0; i < n; i++) {
+          this.lines.splice(this.lines.length - this.rows + this.cursor.r, 1)
+          this.lines.push(this.newLine())
+        }
+        this.dirtyAll = true
+      }
+      scrollRegionUp(n) {
+        for (let i = 0; i < n; i++) {
+          this.lines.splice(this.lines.length - this.rows, 1)
+          this.lines.push(this.newLine())
+        }
+        this.dirtyAll = true
+      }
+      scrollRegionDown(n) {
+        for (let i = 0; i < n; i++) {
+          this.lines.splice(this.lines.length - 1, 1)
+          this.lines.unshift(this.newLine())
+        }
+        if (this.lines.length > this.rows + this.maxHistory) {
+          this.lines.length = this.rows + this.maxHistory
+        }
+        this.dirtyAll = true
+      }
+      sgr(params) {
+        const st = this.curStyle
+        if (!params || params.length === 0) params = [0]
+        for (let i = 0; i < params.length; i++) {
+          const v = params[i]
+          if (v === 0) { st.fg = -1; st.bg = -1; st.bold = false; st.dim = false; st.ul = false; st.inv = false }
+          else if (v === 1) st.bold = true
+          else if (v === 2) st.dim = true
+          else if (v === 4) st.ul = true
+          else if (v === 7) st.inv = true
+          else if (v === 21 || v === 22) st.bold = false
+          else if (v === 24) st.ul = false
+          else if (v === 27) st.inv = false
+          else if (v >= 30 && v <= 37) st.fg = v - 30
+          else if (v === 39) st.fg = -1
+          else if (v >= 40 && v <= 47) st.bg = v - 40
+          else if (v === 49) st.bg = -1
+          else if (v >= 90 && v <= 97) st.fg = 8 + (v - 90)
+          else if (v >= 100 && v <= 107) st.bg = 8 + (v - 100)
+          else if (v === 38 || v === 48) {
+            const next = params[i + 1]
+            if (next === 5 && params[i + 2] !== undefined) {
+              if (v === 38) st.fg = params[i + 2]
+              else st.bg = params[i + 2]
+              i += 2
+            } else if (next === 2 && params[i + 2] !== undefined && params[i + 3] !== undefined && params[i + 4] !== undefined) {
+              const id = termTrueColorId(params[i + 2], params[i + 3], params[i + 4])
+              if (v === 38) st.fg = id
+              else st.bg = id
+              i += 4
+            }
+          }
+        }
+      }
+      /** Feed one output chunk (complete UTF-8 string). */
+      feed(data) {
+        if (!data) return
+        let i = 0
+        const len = data.length
+        while (i < len) {
+          const ch = data[i]
+          if (this.escState === 0) {
+            if (ch === '\x1b') { this.escState = 1; this.escBuf = ''; i++; continue }
+            if (ch === '\r') { this.cursor.c = 0; i++; continue }
+            if (ch === '\n' || ch === '\x0b' || ch === '\x0c') { this.linefeed(); i++; continue }
+            if (ch === '\b') { if (this.cursor.c > 0) this.cursor.c--; i++; continue }
+            if (ch === '\t') { this.cursor.c = Math.min(this.cols - 1, (Math.floor(this.cursor.c / 8) + 1) * 8); i++; continue }
+            if (ch === '\x07' || ch === '\x0e' || ch === '\x0f') { i++; continue }
+            const cp = data.codePointAt(i)
+            const str = String.fromCodePoint(cp)
+            this.putChar(str, termCharWidth(cp))
+            i += str.length
+            continue
+          }
+          if (this.escState === 1) {
+            if (ch === '[') { this.escState = 2; this.escBuf = ''; i++; continue }
+            if (ch === ']') { this.escState = 3; this.escBuf = ''; i++; continue }
+            if (ch === 'P' || ch === 'X' || ch === '^' || ch === '_') { this.escState = 4; i++; continue }
+            if (ch === '7') { this.saved = { r: this.cursor.r, c: this.cursor.c }; this.escState = 0; i++; continue }
+            if (ch === '8') { this.cursor = { r: Math.min(this.rows - 1, this.saved.r), c: Math.min(this.cols - 1, this.saved.c) }; this.escState = 0; i++; continue }
+            if (ch === 'c') { this.reset(); this.escState = 0; i++; continue }
+            if (ch === 'D') { this.scrollRegionUp(1); this.escState = 0; i++; continue }
+            if (ch === 'M') { this.scrollRegionDown(1); this.escState = 0; i++; continue }
+            if (ch === 'E') { this.linefeed(); this.cursor.c = 0; this.escState = 0; i++; continue }
+            if (ch === 'F') { if (this.cursor.r > 0) this.cursor.r--; this.cursor.c = 0; this.escState = 0; i++; continue }
+            if (ch === 'H') { this.cursor.c = Math.min(this.cols - 1, (Math.floor(this.cursor.c / 8) + 1) * 8); this.escState = 0; i++; continue }
+            if (ch === '(' || ch === ')' || ch === '#' || ch === '=' || ch === '>') { this.escState = 5; i++; continue }
+            this.escState = 0; i++; continue // unknown ESC sequence: drop it
+          }
+          if (this.escState === 2) {
+            // CSI: collect until a final byte 0x40-0x7e
+            const code = ch.charCodeAt(0)
+            if (code >= 0x40 && code <= 0x7e) {
+              this.escBuf += ch
+              this.dispatchCsi(this.escBuf)
+              this.escState = 0
+              this.escBuf = ''
+            } else {
+              this.escBuf += ch
+            }
+            i++
+            continue
+          }
+          if (this.escState === 3) {
+            // OSC: ignore until BEL or ST
+            if (ch === '\x07') this.escState = 0
+            else if (ch === '\x1b') this.escState = 6
+            i++
+            continue
+          }
+          if (this.escState === 4) {
+            // DCS/PM/APC: ignore until ST or BEL
+            if (ch === '\x07') this.escState = 0
+            else if (ch === '\x1b') this.escState = 6
+            i++
+            continue
+          }
+          if (this.escState === 5) { this.escState = 0; i++; continue }
+          if (this.escState === 6) {
+            // expecting '\' to close ST
+            this.escState = 0
+            i++
+            continue
+          }
+          i++
+        }
+      }
+      dispatchCsi(buf) {
+        let b = buf
+        let privateMode = false
+        if (b[0] === '?' || b[0] === '>' || b[0] === '=') {
+          privateMode = b[0] === '?'
+          b = b.slice(1)
+        }
+        const final = b[b.length - 1]
+        const body = b.slice(0, -1)
+        const params = body === '' ? [] : body.split(';').map((s) => (s === '' ? 0 : parseInt(s, 10)))
+        const n = (i) => { const v = params[i]; return v === undefined || Number.isNaN(v) ? 1 : v }
+        const r = this.cursor.r
+        const c = this.cursor.c
+        switch (final) {
+          case 'A': this.cursor.r = Math.max(0, r - n(0)); break
+          case 'B': this.cursor.r = Math.min(this.rows - 1, r + n(0)); break
+          case 'C': this.cursor.c = Math.min(this.cols - 1, c + n(0)); break
+          case 'D': this.cursor.c = Math.max(0, c - n(0)); break
+          case 'E': this.cursor.r = Math.min(this.rows - 1, r + n(0)); this.cursor.c = 0; break
+          case 'F': this.cursor.r = Math.max(0, r - n(0)); this.cursor.c = 0; break
+          case 'G': this.cursor.c = Math.max(0, Math.min(this.cols - 1, n(0) - 1)); break
+          case 'd': this.cursor.r = Math.max(0, Math.min(this.rows - 1, n(0) - 1)); break
+          case 'H': case 'f':
+            this.cursor.r = Math.max(0, Math.min(this.rows - 1, n(0) - 1))
+            this.cursor.c = Math.max(0, Math.min(this.cols - 1, n(1) - 1))
+            break
+          case 'J': this.eraseDisplay(n(0)); break
+          case 'K': this.eraseLine(n(0)); break
+          case 'X': this.eraseChars(n(0)); break
+          case 'P': this.deleteChars(n(0)); break
+          case '@': this.insertChars(n(0)); break
+          case 'L': this.insertLines(n(0)); break
+          case 'M': this.deleteLines(n(0)); break
+          case 'S': this.scrollRegionUp(n(0)); break
+          case 'T': this.scrollRegionDown(n(0)); break
+          case 'm': this.sgr(params); break
+          case 's': this.saved = { r: this.cursor.r, c: this.cursor.c }; break
+          case 'u': this.cursor = { r: Math.min(this.rows - 1, this.saved.r), c: Math.min(this.cols - 1, this.saved.c) }; break
+          case 'h': case 'l':
+            if (privateMode && n(0) === 25) this.cursorVisible = final === 'h'
+            break
+          default: break // DA/DSR/decals ignored
+        }
+      }
+      resize(cols, rows) {
+        cols = Math.max(20, cols)
+        rows = Math.max(5, rows)
+        if (cols === this.cols && rows === this.rows) return
+        const nextLines = this.lines.map((line) => {
+          const ch = new Array(cols).fill(' ')
+          const st = new Array(cols).fill(0)
+          for (let i = 0; i < Math.min(cols, line.ch.length); i++) {
+            if (line.ch[i] !== '\0') { ch[i] = line.ch[i]; st[i] = line.st[i] }
+          }
+          return { ch, st }
+        })
+        if (rows > this.rows) {
+          for (let i = 0; i < rows - this.rows; i++) nextLines.push(this.newLine())
+        }
+        this.lines = nextLines
+        this.cols = cols
+        this.rows = rows
+        this.cursor.r = Math.max(0, Math.min(rows - 1, this.cursor.r))
+        this.cursor.c = Math.max(0, Math.min(cols - 1, this.cursor.c))
+        if (this.lines.length > rows + this.maxHistory) {
+          this.lines.splice(0, this.lines.length - rows - this.maxHistory)
+        }
+        this.dirtyAll = true
+      }
+      /** Plain text of the screen area (tests / clipboard). */
+      screenText() {
+        const out = []
+        for (let r = 0; r < this.rows; r++) {
+          const line = this.lines[this.lines.length - this.rows + r]
+          let text = ''
+          for (let c = 0; c < this.cols; c++) if (line.ch[c] !== '\0') text += line.ch[c]
+          out.push(text.replace(/\s+$/, ''))
+        }
+        return out.join('\n').replace(/\n+$/, '')
+      }
+      /** HTML for one line (plain text when unstyled, spans per style run). */
+      renderLineHtml(line) {
+        let html = ''
+        let buf = ''
+        let cur = -1
+        const cols = line.ch.length
+        const push = () => {
+          if (!buf) return
+          if (cur === 0 || cur === -1) html += escapeHtml(buf)
+          else {
+            const s = termStyles[cur]
+            let css = ''
+            let fg = s.inv ? s.bg : s.fg
+            let bg = s.inv ? s.fg : s.bg
+            const fgColor = termCssColor(fg)
+            const bgColor = termCssColor(bg)
+            if (fgColor) css += 'color:' + fgColor + ';'
+            if (bgColor) css += 'background-color:' + bgColor + ';'
+            if (s.bold) css += 'font-weight:600;'
+            if (s.dim) css += 'opacity:.72;'
+            if (s.ul) css += 'text-decoration:underline;'
+            html += '<span style="' + css + '">' + escapeHtml(buf) + '</span>'
+          }
+          buf = ''
+        }
+        for (let i = 0; i < cols; i++) {
+          const ch = line.ch[i]
+          if (ch === '\0') continue
+          const st = line.st[i]
+          if (st !== cur) { push(); cur = st }
+          buf += ch
+        }
+        push()
+        return html === '' ? '&nbsp;' : html
+      }
+    }
+
+    // ── embedded terminal wiring (ws + panel) ──────────────────────────────
+
+    let termEmu = null // created lazily with panel dims
+    let termEmuEls = null // { viewport, lines: [], ta, cursor, probe }
+    let termRenderTimer = null
+    const termNet = {
+      ws: null,
+      status: 'closed',
+      cwd: '',
+      shell: '',
+      pid: 0,
+      reconnectTimer: null,
+      discard: false,
+    }
+
+    function termStatusText() {
+      switch (state.termStatus) {
+        case 'connecting': return '连接中…'
+        case 'open': return '已连接'
+        case 'exited': return '已退出'
+        case 'error': return '不可用'
+        default: return '未连接'
+      }
+    }
+
+    function termSetStatus(status, patch) {
+      const p = { termStatus: status }
+      if (patch) Object.assign(p, patch)
+      setState(p)
+    }
+
+    function termScheduleReconnect() {
+      if (termNet.reconnectTimer !== null || !state.terminalOpen) return
+      termNet.reconnectTimer = setTimeout(() => {
+        termNet.reconnectTimer = null
+        if (state.terminalOpen) termConnect(termNet.lastRoot)
+      }, 1500)
+    }
+
+    function termConnect(rootId) {
+      if (termNet.ws && (termNet.ws.readyState === 0 || termNet.ws.readyState === 1)) return
+      if (typeof WebSocket === 'undefined') return
+      termNet.lastRoot = rootId || termNet.lastRoot || ''
+      termEnsureEmu() // the init frame always carries the current grid dims
+      termSetStatus('connecting', { termError: '' })
+      let ws
+      try {
+        const proto = window.location.protocol === 'https:' ? 'wss://' : 'ws://'
+        ws = new WebSocket(proto + window.location.host + '/dsh-editor-terminal/ws?root=' + encodeURIComponent(rootId || ''))
+      } catch (e) {
+        termSetStatus('error', { termError: String(e && e.message ? e.message : e) })
+        return
+      }
+      termNet.ws = ws
+      ws.onopen = () => {
+        termSetStatus('connecting', { termError: '' })
+        if (termEmu) {
+          try {
+            ws.send(JSON.stringify({
+              t: 'init',
+              cols: termEmu.cols,
+              rows: termEmu.rows,
+              shell: state.termShell === 'cmd' ? 'cmd' : undefined,
+            }))
+          } catch (e) { /* ignore */ }
+        }
+      }
+      ws.onmessage = (ev) => {
+        let msg = null
+        try { msg = JSON.parse(ev.data) } catch (e) { return }
+        if (!msg || typeof msg !== 'object') return
+        if (msg.t === 'meta') {
+          termNet.cwd = msg.cwd || ''
+          termNet.shell = msg.shell || ''
+          termNet.pid = msg.pid || 0
+          setState({ termMeta: { cwd: termNet.cwd, shell: termNet.shell, pid: termNet.pid }, termStatus: 'open' })
+        } else if (msg.t === 'hist') {
+          if (termEmu) { termEmu.reset(); termEmu.feed(msg.d || '') }
+          termRenderNow()
+        } else if (msg.t === 'out') {
+          if (termEmu) termEmu.feed(msg.d || '')
+          termScheduleRender()
+        } else if (msg.t === 'exit') {
+          termSetStatus('exited', { termError: '' })
+        } else if (msg.t === 'err') {
+          termSetStatus('error', { termError: msg.m || '终端不可用' })
+        }
+      }
+      ws.onclose = () => {
+        termNet.ws = null
+        if (termNet.discard) { termNet.discard = false; termSetStatus('closed'); return }
+        termSetStatus('closed')
+        termScheduleReconnect()
+      }
+      ws.onerror = () => { /* onclose follows */ }
+    }
+
+    function termSend(obj) {
+      const ws = termNet.ws
+      if (ws && ws.readyState === 1) {
+        try { ws.send(JSON.stringify(obj)) } catch (e) { /* ignore */ }
+      }
+    }
+
+    function termClose() {
+      termNet.discard = true
+      const ws = termNet.ws
+      termNet.ws = null
+      if (ws) { try { ws.close() } catch (e) { /* ignore */ } }
+      if (termNet.reconnectTimer !== null) { clearTimeout(termNet.reconnectTimer); termNet.reconnectTimer = null }
+      termSetStatus('closed')
+    }
+
+    function termRestart(shell) {
+      if (termEmu) { termEmu.reset() }
+      termRenderNow()
+      termSend({ t: 'restart', shell: shell === 'cmd' ? 'cmd' : undefined })
+      termSetStatus('connecting', { termError: '' })
+    }
+
+    function termEnsureEmu() {
+      if (termEmu) return termEmu
+      termEmu = new TermEmu(100, 24)
+      return termEmu
+    }
+
+    /** Build the DOM scaffold for the terminal viewport (once per mount). */
+    function termEnsureEls(viewportEl) {
+      if (termEmuEls && termEmuEls.viewport === viewportEl) return termEmuEls
+      const probe = document.createElement('span')
+      probe.className = 'dsh-editor-term-line'
+      probe.style.position = 'absolute'
+      probe.style.visibility = 'hidden'
+      probe.style.whiteSpace = 'pre'
+      probe.textContent = '0123456789'
+      viewportEl.appendChild(probe)
+      const lineEls = []
+      for (let i = 0; i < 60; i++) {
+        const el = document.createElement('div')
+        el.className = 'dsh-editor-term-line'
+        el.style.visibility = 'hidden'
+        viewportEl.appendChild(el)
+        lineEls.push(el)
+      }
+      const cursor = document.createElement('div')
+      cursor.className = 'dsh-editor-term-cursor'
+      cursor.style.visibility = 'hidden'
+      viewportEl.appendChild(cursor)
+      const ta = document.createElement('textarea')
+      ta.className = 'dsh-editor-term-hidden-ta'
+      ta.setAttribute('autocapitalize', 'off')
+      ta.setAttribute('autocomplete', 'off')
+      ta.setAttribute('autocorrect', 'off')
+      ta.setAttribute('spellcheck', 'false')
+      viewportEl.appendChild(ta)
+      termEmuEls = { viewport: viewportEl, probe, lineEls, cursor, ta, cellW: 8, cellH: 19 }
+      termUpdateMetrics()
+      return termEmuEls
+    }
+
+    function termUpdateMetrics() {
+      const els = termEmuEls
+      if (!els || !termEmu) return
+      els.cellW = Math.max(1, els.probe.offsetWidth / 10)
+      els.cellH = Math.max(1, els.probe.offsetHeight)
+      const w = els.viewport.clientWidth - 20
+      const h = els.viewport.clientHeight - 12
+      const cols = Math.max(20, Math.floor(w / els.cellW))
+      const rows = Math.max(5, Math.floor(h / els.cellH))
+      if (cols !== termEmu.cols || rows !== termEmu.rows) {
+        termEmu.resize(cols, rows)
+        termSend({ t: 'resize', cols: termEmu.cols, rows: termEmu.rows })
+        termScheduleRender()
+      }
+    }
+
+    function termScheduleRender() {
+      if (termRenderTimer !== null) return
+      termRenderTimer = requestAnimationFrame(() => {
+        termRenderTimer = null
+        termRenderNow()
+      })
+    }
+
+    function termRenderNow() {
+      const els = termEmuEls
+      const emu = termEmu
+      if (!els || !emu) return
+      const start = Math.max(0, emu.lines.length - emu.rows - emu.offset)
+      for (let i = 0; i < emu.rows; i++) {
+        const el = els.lineEls[i]
+        if (!el) break
+        const line = emu.lines[start + i]
+        el.style.top = (6 + i * els.cellH) + 'px'
+        el.style.height = els.cellH + 'px'
+        el.style.visibility = 'visible'
+        el.innerHTML = line ? emu.renderLineHtml(line) : ''
+      }
+      for (let i = emu.rows; i < els.lineEls.length; i++) {
+        els.lineEls[i].style.visibility = 'hidden'
+      }
+      // cursor (only on the live view)
+      if (emu.offset === 0 && emu.cursorVisible) {
+        els.cursor.style.left = (10 + emu.cursor.c * els.cellW) + 'px'
+        els.cursor.style.top = (6 + emu.cursor.r * els.cellH) + 'px'
+        els.cursor.style.width = els.cellW + 'px'
+        els.cursor.style.height = els.cellH + 'px'
+        els.cursor.style.visibility = 'visible'
+      } else {
+        els.cursor.style.visibility = 'hidden'
+      }
+    }
+
+    /** Key-to-sequence mapping for the terminal textarea. */
+    function termKeySequence(e) {
+      const k = e.key
+      if (k === 'Enter') return '\r'
+      if (k === 'Backspace') return '\x7f'
+      if (k === 'Tab') return '\t'
+      if (k === 'Delete') return '\x1b[3~'
+      if (k === 'Insert') return '\x1b[2~'
+      if (k === 'Home') return '\x1b[H'
+      if (k === 'End') return '\x1b[F'
+      if (k === 'PageUp') return '\x1b[5~'
+      if (k === 'PageDown') return '\x1b[6~'
+      if (k === 'ArrowUp') return '\x1b[A'
+      if (k === 'ArrowDown') return '\x1b[B'
+      if (k === 'ArrowRight') return '\x1b[C'
+      if (k === 'ArrowLeft') return '\x1b[D'
+      if (k === 'F1') return '\x1bOP'
+      if (k === 'F2') return '\x1bOQ'
+      if (k === 'F3') return '\x1bOR'
+      if (k === 'F4') return '\x1bOS'
+      if (k === 'Escape') return '\x1b'
+      if (e.altKey && k.length === 1) return '\x1b' + k
+      if (e.ctrlKey && k.length === 1 && !e.shiftKey && !e.altKey) {
+        const code = k.toLowerCase().charCodeAt(0) - 96
+        if (code >= 1 && code <= 26) return String.fromCharCode(code)
+      }
+      if (e.ctrlKey && k === 'Enter') return '\r'
+      return null
+    }
+
+    function termSetupInput() {
+      const els = termEmuEls
+      if (!els) return
+      const ta = els.ta
+      ta.onkeydown = (e) => {
+        const seq = termKeySequence(e)
+        if (seq !== null) {
+          e.preventDefault()
+          termSend({ t: 'input', d: seq })
+          return
+        }
+        // Ctrl+V / Cmd+V: let the paste event deliver the text
+        if ((e.ctrlKey || e.metaKey) && (e.key === 'v' || e.key === 'V')) return
+        // plain printable characters flow through the input event
+      }
+      ta.oninput = (e) => {
+        if (e.isComposing) return
+        const text = ta.value
+        ta.value = ''
+        if (text) termSend({ t: 'input', d: text })
+      }
+      ta.oncompositionend = (e) => {
+        const text = e.data || ''
+        ta.value = ''
+        if (text) termSend({ t: 'input', d: text })
+      }
+      ta.onpaste = (e) => {
+        e.preventDefault()
+        const text = (e.clipboardData && e.clipboardData.getData('text')) || ''
+        if (text) termSend({ t: 'input', d: text })
+      }
+    }
+
+    /** Embedded terminal panel — fixed bottom bar, both modes. */
+    function TerminalPanel(props) {
+      useForce()
+      if (!state.terminalOpen) return null
+      const viewportRef = React.useRef(null)
+      const taRef = React.useRef(null)
+
+      React.useEffect(() => {
+        const viewportEl = viewportRef.current
+        if (!viewportEl) return undefined
+        termEnsureEmu()
+        termEnsureEls(viewportEl)
+        termSetupInput()
+        termUpdateMetrics()
+        if (!(termNet.ws && (termNet.ws.readyState === 0 || termNet.ws.readyState === 1))) {
+          termConnect(terminalRootId(props))
+        }
+        // measure again after fonts settle
+        const t1 = setTimeout(() => termUpdateMetrics(), 120)
+        const t2 = setTimeout(() => termUpdateMetrics(), 600)
+        let ro = null
+        try {
+          ro = new ResizeObserver(() => termUpdateMetrics())
+          ro.observe(viewportEl)
+        } catch (e) { /* no ResizeObserver */ }
+        const onWheel = (e) => {
+          if (!termEmu) return
+          const before = termEmu.offset
+          const max = Math.max(0, termEmu.lines.length - termEmu.rows)
+          if (e.deltaY > 0) termEmu.offset = Math.min(max, termEmu.offset + 3)
+          else if (e.deltaY < 0) termEmu.offset = Math.max(0, termEmu.offset - 3)
+          if (termEmu.offset !== before) termRenderNow()
+        }
+        viewportEl.addEventListener('wheel', onWheel, { passive: true })
+        return () => {
+          clearTimeout(t1)
+          clearTimeout(t2)
+          if (ro) { try { ro.disconnect() } catch (e) { /* ignore */ } }
+          viewportEl.removeEventListener('wheel', onWheel)
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [])
+
+      const header = React.createElement('div', { className: 'dsh-editor-term-head' },
+        React.createElement('span', { className: 'dsh-editor-term-head-title' },
+          React.createElement(FallbackTerminalIcon, { size: 14 }),
+          '终端',
+        ),
+        React.createElement('span', { className: 'dsh-editor-term-dot ' + state.termStatus }),
+        React.createElement('span', { className: 'dsh-editor-term-shell' }, termStatusText()),
+        React.createElement('span', { className: 'dsh-editor-term-cwd', title: (state.termMeta && state.termMeta.cwd) || '' },
+          (state.termMeta && state.termMeta.cwd) || '',
+        ),
+        React.createElement('select', {
+          className: 'dsh-editor-term-select',
+          title: '选择终端 Shell',
+          value: state.termShell,
+          onChange: (e) => { setState({ termShell: e.target.value }); termRestart(e.target.value) },
+        },
+          React.createElement('option', { value: '' }, 'PowerShell'),
+          React.createElement('option', { value: 'cmd' }, 'CMD'),
+        ),
+        React.createElement('button', {
+          type: 'button',
+          className: 'dsh-editor-term-btn',
+          title: '重新启动终端（会终止当前会话）',
+          onClick: () => termRestart(state.termShell),
+        }, '重新启动'),
+        React.createElement('button', {
+          type: 'button',
+          className: 'dsh-editor-term-btn',
+          title: '在系统终端中打开当前工作区目录',
+          onClick: () => openTerminal(terminalRootId(props)),
+        }, '外部终端'),
+        React.createElement('button', {
+          type: 'button',
+          className: 'dsh-editor-term-btn close',
+          title: '关闭终端面板（会话保持运行）',
+          onClick: () => setTerminalOpen(false),
+        }, '×'),
+      )
+
+      const viewport = React.createElement('div', {
+        className: 'dsh-editor-term-viewport',
+        ref: viewportRef,
+        onClick: () => { if (taRef.current) taRef.current.focus() },
+        onKeyDown: (e) => { /* keys handled on the textarea */ },
+      })
+
+      const banner = state.termStatus === 'error' && state.termError
+        ? React.createElement('div', { className: 'dsh-editor-term-banner' }, state.termError)
+        : null
+
+      return React.createElement('div', { className: 'dsh-editor-term-panel' },
+        header,
+        banner,
+        viewport,
+      )
+    }
+
+    /** Toggle the embedded terminal panel (Qoder-style). */
+    function setTerminalOpen(open, rootId) {
+      setState({ terminalOpen: !!open })
+      try { document.body.classList.toggle('dsh-editor-terminal-open', !!open) } catch (e) { /* ignore */ }
+      if (open) {
+        termNet.lastRoot = rootId || termNet.lastRoot || ''
+        termEnsureEmu()
+        termConnect(termNet.lastRoot)
+      } else {
+        termClose()
+      }
     }
 
     /** Single tree node (dir or file). */
@@ -1656,6 +2544,12 @@ window.__ModuleLoader__.load({
         () => React.createElement(ToastLayer, null),
       ))
 
+      // Embedded terminal panel — fixed bottom bar, both modes (1.12).
+      slots.inject('shell.overlay', () => slots.register(
+        { name: 'shell.overlay', id: 'dsh-editor-terminal-panel', order: 30, label: '终端面板' },
+        (props) => React.createElement(TerminalPanel, props),
+      ))
+
       // Editor overlay — always registered; renders null unless editor mode.
       slots.inject('shell.overlay', () => slots.register(
         { name: 'shell.overlay', id: 'dsh-editor-panel', order: 10, label: '编辑器' },
@@ -1677,6 +2571,8 @@ window.__ModuleLoader__.load({
 
       ctx.effect(() => () => {
         if (toastTimer !== null) { clearTimeout(toastTimer); toastTimer = null }
+        if (termRenderTimer !== null) { cancelAnimationFrame(termRenderTimer); termRenderTimer = null }
+        termClose()
         if (styleEl !== null) {
           try { styleEl.remove() } catch (e) { /* ignore */ }
           styleEl = null
@@ -1730,6 +2626,11 @@ window.__ModuleLoader__.load({
       state.sessionQuery = query || ''
       emit()
     }
+    // embedded-terminal emulator test hooks (parser/grid, no DOM)
+    exports._termNew = function (cols, rows) { return new TermEmu(cols || 40, rows || 8, 50) }
+    exports._termFeed = function (emu, text) { emu.feed(text) }
+    exports._termText = function (emu) { return emu.screenText() }
+    exports._termWidthOf = termCharWidth
     return module.exports
   },
 })

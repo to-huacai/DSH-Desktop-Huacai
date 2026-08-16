@@ -13,7 +13,7 @@ DSH-Desktop-Huacai is a self-contained desktop client built on DeepSeek Harness.
 - **Launcher management**: automatically detects and starts the DeepSeek service; extraction progress bar + loading overlay, no blank waiting
 - **Custom skins**: one-click light theme with 5 preset accent colors (pink/blue/green/purple/orange) + custom color picker; optional photo background (built-in default or upload ≤15MB), translucent panels, frosted-glass AI reply cards; settings auto-saved
 - **Archive management**: the "Archive" panel in the sidebar for viewing/restoring/permanently deleting archived sessions, synced live with dsh's native operations
-- **Terminal button**: a sidebar-foot [Terminal] button opens a system terminal (Windows Terminal, or cmd as fallback) rooted at the current workspace — available in both conversation mode and editor mode
+- **Terminal**: a sidebar-foot [Terminal] button opens an embedded Qoder-style terminal panel (PowerShell/CMD via ConPTY) or an external system terminal — available in both conversation mode and editor mode
 - **Plugin system**: built-in editor plugin (dsh-editor), update-check plugin (dsh-updater) and other @local plugins
 - **In-app updates**: one-click check and update of the dsh core from Settings → General (npm official registry, auto-switches mirror on failure), with automatic rollback
 - **System tray**: closing the window minimizes to tray and the service keeps running; right-click the tray icon to "Open UI" or "Stop & Exit"
@@ -124,9 +124,10 @@ The five built-in features (skin, archive, update, editor mode, terminal) are al
 
 **Entry: the "Terminal" button at the bottom of the sidebar** — visible in both conversation mode and editor mode
 
-- One click opens a system terminal window (Windows Terminal when installed, cmd otherwise) rooted at the current workspace directory
+- One click opens an **embedded Qoder-style terminal panel** (fixed bottom bar): switch PowerShell/CMD from the header, colored output, wide CJK characters, wheel-scroll history; the shell session survives closing the panel
+- The panel header also offers "external terminal" to open the current workspace in a system terminal window (Windows Terminal, or cmd)
 - Editor mode: opens at the file-tree project root; conversation mode: at the current session's workspace (falls back to the DSH home / user home)
-- The terminal is an independent window that keeps running after the DSH UI/service exits; failures surface as a red toast in the UI
+- Driven by ConPTY (node-pty) + WebSocket — zero new dependencies; the working directory comes from the workspace registry, never from a client-supplied path
 
 ### 🔄 In-App Update (dsh-updater)
 

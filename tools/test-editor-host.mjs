@@ -37,6 +37,7 @@ try {
 
   // capture the registered route handlers
   const routes = []
+  const upgrades = []
   const injectCalls = []
   const ctx = {
     get(name) {
@@ -63,15 +64,21 @@ try {
         routes.push(route)
         return () => {}
       },
+      registerUpgrade(route) {
+        upgrades.push(route)
+        return () => {}
+      },
     },
   }
   injectCalls[0].cb(fakeWebCtx)
   if (routes.length !== 2) throw new Error('expected two routes, got ' + routes.length)
+  if (upgrades.length !== 1) throw new Error('expected one upgrade route, got ' + upgrades.length)
   const route = routes.find((r) => r.kind === 'prefix' && r.path === '/dsh-editor')
   const terminalRoute = routes.find((r) => r.kind === 'prefix' && r.path === '/dsh-editor-terminal')
   if (!route) throw new Error('missing /dsh-editor route: ' + JSON.stringify(routes.map((r) => r.path)))
   if (!terminalRoute) throw new Error('missing /dsh-editor-terminal route: ' + JSON.stringify(routes.map((r) => r.path)))
-  console.log('✓ webServer routes registered: ' + routes.map((r) => r.path).join(', '))
+  if (upgrades[0].path !== '/dsh-editor-terminal/ws') throw new Error('bad upgrade route: ' + JSON.stringify(upgrades.map((u) => u.path)))
+  console.log('✓ webServer routes: ' + routes.map((r) => r.path).join(', ') + ' + ws ' + upgrades[0].path)
 
   // helper to call a route handler with a fake req/res
   function makeCall(r) {

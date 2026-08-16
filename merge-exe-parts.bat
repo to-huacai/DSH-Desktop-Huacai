@@ -1,4 +1,4 @@
-@echo off
+﻿@echo off
 rem ============================================================
 rem  Recombine the split release exe parts back into the exe.
 rem  Usage: double-click this file (or run from this folder).
@@ -12,5 +12,6 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
-echo Done. DSH-Desktop-Huacai-1.12.exe restored (120,052,249 bytes).
+echo Done. DSH-Desktop-Huacai-1.12.exe restored (120099741 bytes).
 pause
+

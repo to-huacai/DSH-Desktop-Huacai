@@ -7,6 +7,10 @@
  *   GET  /dsh-editor/file?root=&path= → { ok, path, content, size }
  *   POST /dsh-editor/file         → body { root, path, content } → { ok, path }
  *   POST /dsh-editor-terminal/open → body { root?, dryRun? } → { ok, shell, cwd }
+ *   WS   /dsh-editor-terminal/ws  → Qoder-style EMBEDDED terminal: a ConPTY
+ *         shell (node-pty, bundled inside the dsh app) relayed over JSON
+ *         WebSocket frames ({t:'init'|'input'|'resize'|'restart'} ←→
+ *         {t:'meta'|'hist'|'out'|'exit'|'err'}).
  *
  * Security model:
  *   - The tree/file endpoints only ever resolve paths under a workspace taken
@@ -15,11 +19,11 @@
  *   - Relative paths are sanitized (`..` and absolute segments rejected).
  *   - Text reads are capped (2 MB) so the browser never ingests a huge file;
  *     binary/known-heavy extensions are skipped in the tree walk.
- *   - The terminal endpoint (1.12) spawns a NATIVE terminal window on the
- *     local machine — the browser is expected to be on the same host (the
- *     desktop launcher serves 127.0.0.1). The working directory is resolved
- *     from the workspace registry (never a client-supplied absolute path);
- *     `dryRun: true` validates resolution without spawning a window.
+ *   - The terminal endpoints (1.12) run shells on the LOCAL machine — the
+ *     browser is expected to be on the same host (the desktop launcher serves
+ *     127.0.0.1). The working directory is resolved from the workspace
+ *     registry (never a client-supplied absolute path); `dryRun: true`
+ *     validates resolution without spawning a window.
  *
  * Install: place this package under the profile's node_modules and add one
  * row to the profile cordis.patch.yml (see install-skin-plugin.mjs companion
@@ -29,6 +33,7 @@
 import { promises as fsp } from 'node:fs'
 import { existsSync } from 'node:fs'
 import { join, dirname, normalize, sep } from 'node:path'
+import { createRequire } from 'node:module'
 import cp from 'node:child_process' // CJS default export; tests stub cp.spawn
 import { homedir } from 'node:os'
 
@@ -287,6 +292,221 @@ async function handleTerminalOpen(ctx, req, res) {
   }
 }
 
+// ── embedded terminal (1.12): Qoder-style in-page PTY ──────────────────────
+// A ConPTY shell runs inside the dsh web process (node-pty — bundled with the
+// dsh app) and is relayed to the browser panel over a WebSocket. Zero new
+// dependencies: `node-pty` and `ws` both ship inside the embedded app. When
+// node-pty cannot be resolved (non-embedded dev installs), the WS endpoint
+// answers with a readable error instead of crashing.
+
+/** Locate the embedded app's node_modules (node-pty/ws live there, NOT in the
+ *  profile's node_modules — the plugin must resolve them from the app). */
+function appNodeModulesRoot() {
+  const candidates = [
+    process.cwd() ? join(process.cwd(), 'app', 'node_modules') : null,
+    process.execPath ? join(dirname(process.execPath), '..', 'app', 'node_modules') : null,
+    process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, 'DSH-Desktop-Huacai', 'app', 'node_modules') : null,
+  ]
+  for (const candidate of candidates) {
+    if (!candidate) continue
+    try {
+      if (existsSync(join(candidate, 'node-pty', 'package.json'))) return candidate
+    } catch (error) { /* keep looking */ }
+  }
+  return null
+}
+
+/** node-pty module (ConPTY) or null when unavailable. */
+function loadNodePty() {
+  try {
+    const appRoot = appNodeModulesRoot()
+    if (!appRoot) return null
+    const appRequire = createRequire(join(appRoot, 'node-pty', 'package.json'))
+    return appRequire('node-pty') || null
+  } catch (error) {
+    return null
+  }
+}
+
+/** `ws` WebSocketServer (noServer mode) or null when unavailable. */
+function loadWsServer() {
+  try {
+    const appRoot = appNodeModulesRoot()
+    if (!appRoot) return null
+    const appRequire = createRequire(join(appRoot, 'node-pty', 'package.json'))
+    // require('ws') resolves to the WebSocket class; the server lives on the
+    // WebSocketServer named export (both are attachable statics).
+    const wsLib = appRequire('ws')
+    return (wsLib && wsLib.WebSocketServer) || null
+  } catch (error) {
+    return null
+  }
+}
+
+const TERM_HISTORY_CAP = 600000 // bytes of raw output retained for replay
+const TERM_MAX_LINES = 4000
+
+/** One shared embedded-terminal session (shell keeps running while the panel
+ *  is closed; reopening replays history). */
+const termState = {
+  pty: null,          // node-pty IPty or null
+  ptyGen: 0,          // increments per spawn; stale exit events are ignored
+  cwd: '',
+  shell: '',
+  cols: 100,
+  rows: 30,
+  exited: false,
+  history: '',
+  historyBytes: 0,
+  sockets: new Set(), // attached WebSockets (multiple tabs can attach)
+}
+
+function clampInt(value, min, max, fallback) {
+  const n = parseInt(value, 10)
+  if (Number.isNaN(n)) return fallback
+  return Math.max(min, Math.min(max, n))
+}
+
+function termSendAll(message) {
+  const text = JSON.stringify(message)
+  for (const ws of Array.from(termState.sockets)) {
+    try {
+      if (ws.readyState === 1) ws.send(text)
+    } catch (error) { /* socket gone */ }
+  }
+}
+
+function termAppendHistory(data) {
+  termState.history += data
+  termState.historyBytes = termState.history.length
+  if (termState.historyBytes > TERM_HISTORY_CAP) {
+    termState.history = termState.history.slice(termState.historyBytes - TERM_HISTORY_CAP)
+    termState.historyBytes = termState.history.length
+  }
+}
+
+/** Kill the current session (if any); its exit event is ignored (stale gen). */
+function termKillCurrent() {
+  const pty = termState.pty
+  termState.pty = null
+  termState.exited = true
+  if (pty) {
+    try { pty.kill() } catch (error) { /* already gone */ }
+  }
+}
+
+/** Spawn (or reuse) the embedded shell at `cwd`. */
+function termEnsureSession(cwd, shell, cols, rows) {
+  if (termState.pty && !termState.exited && termState.shell === shell) return termState
+  termKillCurrent()
+  const ptyMod = loadNodePty()
+  if (!ptyMod) throw new Error('终端组件不可用（node-pty 未随应用加载）')
+  const argv = shell === 'cmd.exe' ? ['cmd.exe'] : ['powershell.exe', '-NoLogo']
+  const env = { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor' }
+  const pty = ptyMod.spawn(argv[0], argv.slice(1), {
+    name: 'xterm-256color',
+    cols: clampInt(cols, 20, 500, 100),
+    rows: clampInt(rows, 5, 200, 30),
+    cwd,
+    env,
+    useConpty: true,
+  })
+  const gen = ++termState.ptyGen
+  termState.pty = pty
+  termState.cwd = cwd
+  termState.shell = shell
+  termState.exited = false
+  termState.cols = clampInt(cols, 20, 500, 100)
+  termState.rows = clampInt(rows, 5, 200, 30)
+  termState.history = ''
+  termState.historyBytes = 0
+  pty.onData((data) => {
+    if (termState.pty !== pty) return // stale session
+    termAppendHistory(data)
+    termSendAll({ t: 'out', d: data })
+  })
+  pty.onExit(({ exitCode }) => {
+    if (termState.pty !== pty) return // stale exit (replaced by a restart)
+    termState.pty = null
+    termState.exited = true
+    termSendAll({ t: 'exit', code: exitCode === undefined ? 0 : exitCode, gen })
+  })
+  return termState
+}
+
+/** Handle one WebSocket client of the embedded terminal. */
+function handleTerminalWs(ws, req, ctx) {
+  let attached = false
+  let url
+  try {
+    url = new URL(req.url || '/', 'http://dsh.local')
+  } catch (error) {
+    try { ws.close(1008, 'bad url') } catch (e) { /* ignore */ }
+    return
+  }
+  const cwd = terminalCwd(ctx, url.searchParams.get('root') || '')
+  ws.on('message', (raw) => {
+    let msg = null
+    try { msg = JSON.parse(String(raw)) } catch (error) { return }
+    if (!msg || typeof msg !== 'object') return
+    if (!attached) {
+      if (msg.t !== 'init') return
+      try {
+        const shell = msg.shell === 'cmd' ? 'cmd.exe' : 'powershell.exe'
+        const session = termEnsureSession(cwd, shell, msg.cols, msg.rows)
+        termState.sockets.add(ws)
+        attached = true
+        termSendTo(ws, {
+          t: 'meta',
+          cwd: session.cwd,
+          shell: session.shell,
+          pid: session.pty ? session.pty.pid : 0,
+        })
+        if (termState.history) termSendTo(ws, { t: 'hist', d: termState.history })
+        if (termState.exited) termSendTo(ws, { t: 'exit', code: 0, gen: termState.ptyGen })
+      } catch (error) {
+        termSendTo(ws, { t: 'err', m: esc(msg(error)) })
+        try { ws.close(1011, 'terminal unavailable') } catch (e) { /* ignore */ }
+      }
+      return
+    }
+    if (msg.t === 'input' && termState.pty && !termState.exited) {
+      try { termState.pty.write(String(msg.d || '')) } catch (error) { /* ignore */ }
+      return
+    }
+    if (msg.t === 'resize' && termState.pty && !termState.exited) {
+      try {
+        termState.pty.resize(
+          clampInt(msg.cols, 20, 500, termState.cols),
+          clampInt(msg.rows, 5, 200, termState.rows),
+        )
+      } catch (error) { /* ignore */ }
+      return
+    }
+    if (msg.t === 'restart') {
+      try {
+        const shell = msg.shell === 'cmd' ? 'cmd.exe' : (termState.shell || 'powershell.exe')
+        termEnsureSession(cwd, shell, msg.cols || termState.cols, msg.rows || termState.rows)
+        termSendTo(ws, {
+          t: 'meta',
+          cwd: termState.cwd,
+          shell: termState.shell,
+          pid: termState.pty ? termState.pty.pid : 0,
+        })
+      } catch (error) {
+        termSendTo(ws, { t: 'err', m: esc(msg(error)) })
+      }
+      return
+    }
+  })
+  ws.on('close', () => { termState.sockets.delete(ws) })
+  ws.on('error', () => { termState.sockets.delete(ws) })
+}
+
+function termSendTo(ws, message) {
+  try { ws.send(JSON.stringify(message)) } catch (error) { /* ignore */ }
+}
+
 export function apply(ctx) {
   // webServer is provided by a row that itself waits on webStartup, so it may
   // not exist yet when this row activates; inject() defers until it does.
@@ -420,5 +640,43 @@ export function apply(ctx) {
         }
       },
     }), 'dsh-editor: terminal route')
+
+    // Embedded terminal WebSocket (Qoder-style in-page PTY). ws ships inside
+    // the app; when it cannot be resolved the handler answers a readable err.
+    const WsServer = loadWsServer()
+    if (WsServer) {
+      const wss = new WsServer({ noServer: true })
+      webCtx.effect(() => webCtx.webServer.registerUpgrade({
+        path: '/dsh-editor-terminal/ws',
+        handler: (req, socket, head) => {
+          wss.handleUpgrade(req, socket, head, (ws) => handleTerminalWs(ws, req, ctx))
+        },
+      }), 'dsh-editor: terminal websocket')
+      webCtx.effect(() => () => {
+        // teardown: detach every client, kill the shell, drop the server
+        for (const ws of Array.from(termState.sockets)) {
+          try { ws.terminate() } catch (error) { /* ignore */ }
+        }
+        termState.sockets.clear()
+        termKillCurrent()
+        try { wss.close() } catch (error) { /* ignore */ }
+      }, 'dsh-editor: terminal teardown')
+    } else {
+      webCtx.effect(() => webCtx.webServer.registerUpgrade({
+        path: '/dsh-editor-terminal/ws',
+        handler: (req, socket) => {
+          try {
+            socket.end([
+              'HTTP/1.1 503 Service Unavailable',
+              'Connection: close',
+              'Content-Type: text/plain; charset=utf-8',
+              'Content-Length: 26',
+              '',
+              'embedded terminal unavailable',
+            ].join('\r\n'))
+          } catch (error) { /* ignore */ }
+        },
+      }), 'dsh-editor: terminal websocket (unavailable)')
+    }
   })
 }

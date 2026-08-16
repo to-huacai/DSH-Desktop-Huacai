@@ -82,11 +82,13 @@ const toggleReg = registerCalls.find((c) => c.opts && c.opts.id === 'dsh-editor-
 const terminalReg = registerCalls.find((c) => c.opts && c.opts.id === 'dsh-editor-terminal')
 const panelReg = registerCalls.find((c) => c.opts && c.opts.id === 'dsh-editor-panel')
 const toastReg = registerCalls.find((c) => c.opts && c.opts.id === 'dsh-editor-toast')
+const termPanelReg = registerCalls.find((c) => c.opts && c.opts.id === 'dsh-editor-terminal-panel')
 if (!toggleReg) throw new Error('missing mode toggle registration')
 if (!terminalReg || typeof terminalReg.comp !== 'function') throw new Error('missing terminal button registration')
 if (!panelReg) throw new Error('missing editor panel registration')
 if (!toastReg) throw new Error('missing toast layer registration')
-console.log('✓ footer/overlay cells: toggle + terminal + panel + toast')
+if (!termPanelReg || typeof termPanelReg.comp !== 'function') throw new Error('missing embedded terminal panel registration')
+console.log('✓ footer/overlay cells: toggle + terminal + panel + toast + term-panel')
 
 // the sidebar.workspaces inject callback must only register when slot ready
 let treeRegistered = 0
@@ -103,6 +105,32 @@ console.log('✓ sidebar.workspaces inject callback executed (mode off → no tr
 if (!cssSeen.value.includes('body.dsh-editor-mode')) throw new Error('editor-mode CSS missing')
 if (!cssSeen.value.includes('data-shell-overlay')) throw new Error('frame selector CSS missing')
 if (!cssSeen.value.includes('.dsh-editor-toast')) throw new Error('toast CSS missing')
+if (!cssSeen.value.includes('.dsh-editor-term-panel')) throw new Error('terminal panel CSS missing')
 console.log('✓ editor-mode CSS present (' + cssSeen.value.length + ' chars)')
+
+// ── embedded-terminal emulator (parser/grid, no DOM) ──
+const term = exports._termNew(20, 5)
+exports._termFeed(term, 'hello 世界\r\n')
+let text = exports._termText(term)
+if (!text.includes('hello 世界')) throw new Error('basic text missing: ' + JSON.stringify(text))
+console.log('✓ emulator basic text + wide chars')
+
+exports._termFeed(term, '\x1b[31mred\x1b[0m plain')
+text = exports._termText(term)
+if (!text.includes('red') || !text.includes('plain')) throw new Error('sgr text broken: ' + JSON.stringify(text))
+if (exports._termWidthOf(0x4e16) !== 2) throw new Error('wide char width wrong')
+console.log('✓ emulator SGR + cursor sequences')
+
+exports._termFeed(term, '\x1b[2J\x1b[Hreset')
+text = exports._termText(term)
+if (!text.startsWith('reset')) throw new Error('clear/home broken: ' + JSON.stringify(text))
+console.log('✓ emulator clear/home')
+
+// scrollback: fill 20 lines into a 5-row terminal → history capped at 50
+const term2 = exports._termNew(10, 5)
+for (let i = 0; i < 20; i++) exports._termFeed(term2, 'line' + i + '\r\n')
+text = exports._termText(term2)
+if (!text.includes('line19')) throw new Error('scroll lost latest: ' + JSON.stringify(text))
+console.log('✓ emulator scrollback')
 
 console.log('\nALL CLIENT SMOKE TESTS PASSED')

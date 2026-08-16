@@ -94,6 +94,15 @@ try {
     Write-Result ("terminal dryRun FAILED: {0}" -f $_.Exception.Message)
 }
 
+# 5.6 embedded terminal: WebSocket round trip (echo through the ConPTY shell)
+try {
+    $wsOut = & $runtime (Join-Path $root 'tools\test-terminal-ws.mjs') 3099 2>&1 | Out-String
+    Write-Result ("terminal ws: {0}" -f ($wsOut.Trim() -replace "`r?`n", ' | '))
+    if ($LASTEXITCODE -ne 0) { Write-Result 'terminal ws FAILED (non-zero exit)' }
+} catch {
+    Write-Result ("terminal ws FAILED: {0}" -f $_.Exception.Message)
+}
+
 # 6. wait for auto-exit (exitAfterMs=45000 after ready)
 $exited = $false
 for ($i = 0; $i -lt 90; $i++) {

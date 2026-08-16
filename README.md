@@ -124,9 +124,10 @@ powershell -ExecutionPolicy Bypass -File build.ps1 -OutExe DSH-Desktop-Huacai-1.
 
 **入口：侧边栏底部「终端」**，对话模式与编辑器模式下均可见
 
-- 一键打开系统终端（Windows Terminal 优先，否则 cmd），自动进入当前工作区目录
+- 点击弹出 **Qoder 式内置终端面板**（底部常驻栏），PowerShell/CMD 一键切换、彩色输出、中文宽字符、滚轮历史；会话不随面板关闭而中断
+- 面板内「外部终端」可在系统终端窗口（Windows Terminal/cmd）打开当前工作区目录
 - 编辑器模式定位到文件树项目根目录；对话模式定位到当前会话所属工作区
-- 终端为独立窗口，关闭 dsh 后仍可用；后端从工作区注册表解析目录，不接受任意路径
+- ConPTY（node-pty）+ WebSocket 驱动，零新增依赖；后端从工作区注册表解析目录，不接受任意路径
 
 ### 🔄 应用内更新（dsh-updater）
 
@@ -150,3 +151,4 @@ powershell -ExecutionPolicy Bypass -File build.ps1 -OutExe DSH-Desktop-Huacai-1.
 - 项目地址：https://gitee.com/huacaicaicai/dsh-desktop-huacai
 - DeepSeek 官网：https://deepseek.com
 - 问题反馈：https://gitee.com/huacaicaicai/dsh-desktop-huacai/issues
+

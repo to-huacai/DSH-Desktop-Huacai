@@ -36,7 +36,10 @@ const ctx = {
   inject(deps, cb) {
     cb({
       effect: (fn) => { const d = fn(); return () => { if (typeof d === 'function') d() } },
-      webServer: { register: (r) => { routes.push(r); return () => {} } },
+      webServer: {
+        register: (r) => { routes.push(r); return () => {} },
+        registerUpgrade: () => () => {},
+      },
     })
   },
 }
